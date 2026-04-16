@@ -1,6 +1,7 @@
 {
   "name": "Pencil.dev Sync",
-  "id": "pencil-dev-sync",
+  "id": "1626500539119583583",
+  "documentAccess": "dynamic-page",
   "api": "1.0.0",
   "main": "code.js",
   "capabilities": [],
