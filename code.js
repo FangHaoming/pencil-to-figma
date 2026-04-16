@@ -294,6 +294,36 @@ async function getExportImageAsset(fill, node, exportContext) {
   return null;
 }
 
+function makePostMessageSafe(value) {
+  if (value === null) return null;
+
+  const valueType = typeof value;
+  if (valueType === 'string' || valueType === 'boolean') return value;
+  if (valueType === 'number') return Number.isFinite(value) ? value : null;
+  if (valueType === 'symbol' || valueType === 'function' || valueType === 'undefined') {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => makePostMessageSafe(item))
+      .filter((item) => item !== undefined);
+  }
+
+  if (valueType === 'object') {
+    const safeObject = {};
+    for (const [key, nestedValue] of Object.entries(value)) {
+      const safeValue = makePostMessageSafe(nestedValue);
+      if (safeValue !== undefined) {
+        safeObject[key] = safeValue;
+      }
+    }
+    return safeObject;
+  }
+
+  return undefined;
+}
+
 async function convertNodesToPenBundle(nodes) {
   const exportContext = { assets: new Map() };
   const penData = {
@@ -310,8 +340,8 @@ async function convertNodesToPenBundle(nodes) {
   }
 
   return {
-    penData: penData,
-    assets: Array.from(exportContext.assets.values())
+    penData: makePostMessageSafe(penData),
+    assets: makePostMessageSafe(Array.from(exportContext.assets.values()))
   };
 }
 
@@ -2509,7 +2539,7 @@ function getAllSyncedNodes() {
 }
 
 // Convert Figma node to pen element
-async function nodeToElement(node, exportContext = null) {
+async function nodeToElement(node, exportContext = null, parentNode = null) {
   let type = 'frame';
 
   // Map Figma types to pen types
@@ -2518,6 +2548,7 @@ async function nodeToElement(node, exportContext = null) {
   else if (node.type === 'TEXT') type = 'text';
   else if (node.type === 'LINE') type = 'line';
   else if (node.type === 'VECTOR') type = 'path';
+  else if (node.type === 'GROUP') type = 'group';
   else if (node.type === 'COMPONENT') type = 'frame';
   else if (node.type === 'INSTANCE') type = 'ref';
   else if (node.type === 'FRAME') type = 'frame';
@@ -2529,8 +2560,20 @@ async function nodeToElement(node, exportContext = null) {
   };
 
   // Position
-  if (node.x !== undefined) element.x = Math.round(node.x * 100) / 100;
-  if (node.y !== undefined) element.y = Math.round(node.y * 100) / 100;
+  // Figma group children use coordinates relative to the group's parent,
+  // while .pen children must be positioned relative to their immediate parent.
+  if (node.x !== undefined) {
+    const relativeX = parentNode && parentNode.type === 'GROUP'
+      ? node.x - parentNode.x
+      : node.x;
+    element.x = Math.round(relativeX * 100) / 100;
+  }
+  if (node.y !== undefined) {
+    const relativeY = parentNode && parentNode.type === 'GROUP'
+      ? node.y - parentNode.y
+      : node.y;
+    element.y = Math.round(relativeY * 100) / 100;
+  }
 
   // Dimensions
   if ('width' in node && node.width !== undefined) {
@@ -2705,7 +2748,7 @@ async function nodeToElement(node, exportContext = null) {
   if ('children' in node && node.children.length > 0) {
     element.children = [];
     for (const child of node.children) {
-      const childElement = await nodeToElement(child, exportContext);
+      const childElement = await nodeToElement(child, exportContext, node);
       if (childElement) {
         element.children.push(childElement);
       }
