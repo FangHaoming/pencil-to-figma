@@ -32,18 +32,7 @@ async function exportSelectionToPen() {
 
     figma.notify('⏳ Exporting selection to .pen file...');
 
-    const penData = {
-      version: '2.7',
-      variables: {},
-      children: []
-    };
-
-    for (const node of selection) {
-      const element = await nodeToElement(node);
-      if (element) {
-        penData.children.push(element);
-      }
-    }
+    const exportBundle = await convertNodesToPenBundle(selection);
 
     // Show UI briefly to trigger download
     figma.showUI(__html__, { width: 1, height: 1, visible: false });
@@ -52,7 +41,8 @@ async function exportSelectionToPen() {
     setTimeout(() => {
       figma.ui.postMessage({
         type: 'download-pen',
-        data: penData,
+        data: exportBundle.penData,
+        assets: exportBundle.assets,
         filename: 'figma-export-selection.pen'
       });
     }, 300);
@@ -68,21 +58,9 @@ async function exportPageToPen() {
   try {
     figma.notify('⏳ Exporting page to .pen file...');
 
-    const penData = {
-      version: '2.7',
-      variables: {},
-      children: []
-    };
+    const exportBundle = await convertNodesToPenBundle(figma.currentPage.children);
 
-    // Export all top-level frames on the page
-    for (const node of figma.currentPage.children) {
-      const element = await nodeToElement(node);
-      if (element) {
-        penData.children.push(element);
-      }
-    }
-
-    if (penData.children.length === 0) {
+    if (exportBundle.penData.children.length === 0) {
       figma.notify('❌ No elements found on page to export');
       figma.closePlugin();
       return;
@@ -95,7 +73,8 @@ async function exportPageToPen() {
     setTimeout(() => {
       figma.ui.postMessage({
         type: 'download-pen',
-        data: penData,
+        data: exportBundle.penData,
+        assets: exportBundle.assets,
         filename: `figma-export-${figma.currentPage.name}.pen`
       });
     }, 300);
@@ -109,6 +88,232 @@ async function exportPageToPen() {
 // Store component mapping for instances
 const componentMap = new Map();
 const imageCache = new Map();
+
+function normalizeImagePath(path) {
+  if (!path || typeof path !== 'string') return '';
+  return path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+function getImageDataFromCache(path) {
+  if (!path || typeof path !== 'string') return null;
+  if (path.startsWith('data:')) return path;
+
+  const normalizedPath = normalizeImagePath(path);
+  const fileName = normalizedPath.split('/').pop();
+
+  return imageCache.get(path) ||
+    imageCache.get(normalizedPath) ||
+    imageCache.get(`./${normalizedPath}`) ||
+    (fileName ? imageCache.get(fileName) : null) ||
+    null;
+}
+
+function getImageFillSpec(fillValue) {
+  if (!fillValue) return null;
+
+  if (Array.isArray(fillValue)) {
+    for (const fill of fillValue) {
+      const imageFill = getImageFillSpec(fill);
+      if (imageFill) return imageFill;
+    }
+    return null;
+  }
+
+  if (typeof fillValue === 'object' && fillValue.type === 'image' && fillValue.url) {
+    return fillValue;
+  }
+
+  return null;
+}
+
+function mapPenImageModeToFigma(mode) {
+  if (mode === 'fit') return 'FIT';
+  if (mode === 'fill') return 'FILL';
+  return 'FILL';
+}
+
+function mapFigmaImageModeToPen(scaleMode) {
+  if (scaleMode === 'FIT') return 'fit';
+  if (scaleMode === 'FILL' || scaleMode === 'CROP') return 'fill';
+  return 'stretch';
+}
+
+const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function uint8ArrayToBase64(bytes) {
+  let result = '';
+
+  for (let i = 0; i < bytes.length; i += 3) {
+    const byte1 = bytes[i];
+    const byte2 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const byte3 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+
+    const triplet = (byte1 << 16) | (byte2 << 8) | byte3;
+
+    result += BASE64_CHARS[(triplet >> 18) & 63];
+    result += BASE64_CHARS[(triplet >> 12) & 63];
+    result += i + 1 < bytes.length ? BASE64_CHARS[(triplet >> 6) & 63] : '=';
+    result += i + 2 < bytes.length ? BASE64_CHARS[triplet & 63] : '=';
+  }
+
+  return result;
+}
+
+function base64ToBinaryString(base64) {
+  const cleanBase64 = String(base64 || '').replace(/[^A-Za-z0-9+/=]/g, '');
+  let result = '';
+
+  for (let i = 0; i < cleanBase64.length; i += 4) {
+    const enc1 = BASE64_CHARS.indexOf(cleanBase64[i]);
+    const enc2 = BASE64_CHARS.indexOf(cleanBase64[i + 1]);
+    const enc3 = cleanBase64[i + 2] === '=' ? 64 : BASE64_CHARS.indexOf(cleanBase64[i + 2]);
+    const enc4 = cleanBase64[i + 3] === '=' ? 64 : BASE64_CHARS.indexOf(cleanBase64[i + 3]);
+
+    const triplet = ((enc1 & 63) << 18) | ((enc2 & 63) << 12) | ((enc3 & 63) << 6) | (enc4 & 63);
+
+    result += String.fromCharCode((triplet >> 16) & 255);
+    if (enc3 !== 64) result += String.fromCharCode((triplet >> 8) & 255);
+    if (enc4 !== 64) result += String.fromCharCode(triplet & 255);
+  }
+
+  return result;
+}
+
+function detectImageMimeType(bytes) {
+  if (!bytes || bytes.length < 12) return 'image/png';
+
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
+    return 'image/png';
+  }
+
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
+    return 'image/jpeg';
+  }
+
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return 'image/gif';
+  }
+
+  if (
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+
+  return 'image/png';
+}
+
+function mimeTypeToExtension(mimeType) {
+  if (mimeType === 'image/jpeg') return 'jpg';
+  if (mimeType === 'image/gif') return 'gif';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'png';
+}
+
+function sanitizeFileNamePart(value, fallback = 'image') {
+  const sanitized = String(value || fallback)
+    .trim()
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return sanitized || fallback;
+}
+
+async function applyImageFillToNode(node, fillValue, context) {
+  const imageFill = getImageFillSpec(fillValue);
+  if (!imageFill) return false;
+
+  const imageData = getImageDataFromCache(imageFill.url);
+  if (!imageData) {
+    console.warn(`[IMAGE] ⚠️ Image not found in cache: ${imageFill.url}` + (context ? ` for ${context}` : ''));
+    return false;
+  }
+
+  try {
+    const base64Data = imageData.includes(',') ? imageData.split(',')[1] : imageData;
+    const imageBytes = base64ToUint8Array(base64Data);
+    const image = figma.createImage(imageBytes);
+    node.fills = [{
+      type: 'IMAGE',
+      scaleMode: mapPenImageModeToFigma(imageFill.mode),
+      imageHash: image.hash
+    }];
+    return true;
+  } catch (error) {
+    console.error(`[IMAGE] ❌ Failed to create image fill from ${imageFill.url}:`, error);
+    return false;
+  }
+}
+
+async function getExportImageAsset(fill, node, exportContext) {
+  if (!exportContext || !fill || fill.type !== 'IMAGE' || !fill.imageHash || fill.visible === false) {
+    return null;
+  }
+
+  const imageAssetKey = `image:${fill.imageHash}`;
+  if (exportContext.assets.has(imageAssetKey)) {
+    return exportContext.assets.get(imageAssetKey);
+  }
+
+  const image = figma.getImageByHash(fill.imageHash);
+  if (image && typeof image.getBytesAsync === 'function') {
+    try {
+      const bytes = await image.getBytesAsync();
+      const mimeType = detectImageMimeType(bytes);
+      const extension = mimeTypeToExtension(mimeType);
+      const fileName = `${sanitizeFileNamePart(node.name || node.type || 'image')}-${fill.imageHash.slice(0, 8)}.${extension}`;
+      const asset = {
+        fileName: fileName,
+        mimeType: mimeType,
+        dataUrl: `data:${mimeType};base64,${uint8ArrayToBase64(bytes)}`
+      };
+
+      exportContext.assets.set(imageAssetKey, asset);
+      return asset;
+    } catch (error) {
+    }
+  }
+
+  if (typeof node.exportAsync === 'function') {
+    try {
+      const bytes = await node.exportAsync({ format: 'PNG' });
+      const assetKey = `node:${node.id}`;
+      const asset = {
+        fileName: `${sanitizeFileNamePart(node.name || node.type || 'image')}-${sanitizeFileNamePart(node.id, 'node')}.png`,
+        mimeType: 'image/png',
+        dataUrl: `data:image/png;base64,${uint8ArrayToBase64(bytes)}`
+      };
+      exportContext.assets.set(assetKey, asset);
+      return asset;
+    } catch (error) {
+    }
+  }
+
+  return null;
+}
+
+async function convertNodesToPenBundle(nodes) {
+  const exportContext = { assets: new Map() };
+  const penData = {
+    version: '2.7',
+    variables: {},
+    children: []
+  };
+
+  for (const node of nodes) {
+    const element = await nodeToElement(node, exportContext);
+    if (element) {
+      penData.children.push(element);
+    }
+  }
+
+  return {
+    penData: penData,
+    assets: Array.from(exportContext.assets.values())
+  };
+}
 
 // Listen for messages from the UI
 figma.ui.onmessage = async (msg) => {
@@ -138,8 +343,8 @@ figma.ui.onmessage = async (msg) => {
     }
   } else if (msg.type === 'export-pen') {
     try {
-      const penData = await exportToPen(msg.mode);
-      figma.ui.postMessage({ type: 'export-data', data: penData });
+      const exportBundle = await exportToPen(msg.mode);
+      figma.ui.postMessage({ type: 'export-data', data: exportBundle.penData, assets: exportBundle.assets });
     } catch (error) {
       figma.ui.postMessage({ type: 'export-error', error: error.message });
     }
@@ -251,7 +456,7 @@ function analyzePenFile(penData) {
     // Specific counts
     if (type === 'ref') stats.instances++;
     if (type === 'text') stats.textNodes++;
-    if (type === 'image') stats.images++;
+    if (type === 'image' || getImageFillSpec(element.fill)) stats.images++;
 
     if (type === 'frame') {
       if (element.reusable) stats.components++;
@@ -520,11 +725,11 @@ async function createNode(element, variables, parentNode = null) {
         node = await createFrame(element, variables, parentNode);
         break;
       case 'rectangle':
-        node = createRectangle(element, variables, parentNode);
+        node = await createRectangle(element, variables, parentNode);
         break;
       case 'ellipse':
       case 'circle':
-        node = createEllipse(element, variables, parentNode);
+        node = await createEllipse(element, variables, parentNode);
         break;
       case 'text':
         node = await createText(element, variables, parentNode);
@@ -538,10 +743,10 @@ async function createNode(element, variables, parentNode = null) {
       case 'path':
       case 'vector':
       case 'svg':
-        node = createVector(element, variables, parentNode);
+        node = await createVector(element, variables, parentNode);
         break;
       case 'group':
-        node = createGroup(element, variables, parentNode);
+        node = await createGroup(element, variables, parentNode);
         break;
       case 'icon_font':
         // Icon fonts should be rendered as vectors
@@ -845,9 +1050,12 @@ async function createFrame(element, variables, parentNode = null) {
 
   // Fill
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) {
-      frame.fills = [fill];
+    const hasImageFill = await applyImageFillToNode(frame, element.fill, element.name || element.id);
+    if (!hasImageFill) {
+      const fill = parseColor(element.fill, variables, element.name || element.id);
+      if (fill) {
+        frame.fills = [fill];
+      }
     }
   }
 
@@ -883,7 +1091,7 @@ async function createFrame(element, variables, parentNode = null) {
 }
 
 // Create rectangle
-function createRectangle(element, variables, parentNode = null) {
+async function createRectangle(element, variables, parentNode = null) {
   const rect = figma.createRectangle();
 
   const width = parseDimension(element.width, 100);
@@ -898,12 +1106,15 @@ function createRectangle(element, variables, parentNode = null) {
   }
 
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) {
-      rect.fills = [fill];
-    } else {
-      // If parseColor returns null (e.g., for images), set empty fills
-      rect.fills = [];
+    const hasImageFill = await applyImageFillToNode(rect, element.fill, element.name || element.id);
+    if (!hasImageFill) {
+      const fill = parseColor(element.fill, variables, element.name || element.id);
+      if (fill) {
+        rect.fills = [fill];
+      } else {
+        // If parseColor returns null (e.g., for images), set empty fills
+        rect.fills = [];
+      }
     }
   } else {
     // No fill defined - set empty fills instead of default white
@@ -930,7 +1141,7 @@ function createRectangle(element, variables, parentNode = null) {
 }
 
 // Create ellipse
-function createEllipse(element, variables, parentNode = null) {
+async function createEllipse(element, variables, parentNode = null) {
   const ellipse = figma.createEllipse();
 
   const width = parseDimension(element.width, 100);
@@ -945,8 +1156,11 @@ function createEllipse(element, variables, parentNode = null) {
   }
 
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) ellipse.fills = [fill];
+    const hasImageFill = await applyImageFillToNode(ellipse, element.fill, element.name || element.id);
+    if (!hasImageFill) {
+      const fill = parseColor(element.fill, variables, element.name || element.id);
+      if (fill) ellipse.fills = [fill];
+    }
   }
 
   if (element.stroke) {
@@ -1063,27 +1277,35 @@ async function createImage(element, variables, parentNode = null) {
   }
 
   // Try to load image
-  if (element.src) {
-    console.log(`[IMAGE] Looking for image: ${element.src}`);
-    const imageData = imageCache.get(element.src);
-    if (imageData) {
-      try {
-        console.log(`[IMAGE] Found image data for: ${element.src}, loading...`);
-        const imageBytes = base64ToUint8Array(imageData.split(',')[1]);
-        const image = figma.createImage(imageBytes);
-        frame.fills = [{ type: 'IMAGE', scaleMode: 'FILL', imageHash: image.hash }];
-        console.log(`[IMAGE] ✅ Successfully loaded image: ${element.src}`);
-      } catch (e) {
-        console.error(`[IMAGE] ❌ Failed to load image ${element.src}:`, e);
-      }
-    } else {
-      console.warn(`[IMAGE] ⚠️ Image not found in cache: ${element.src}. Make sure to select the images folder.`);
-    }
-  } else {
-    console.warn(`[IMAGE] ⚠️ Image element has no src property`);
-  }
+  let appliedImageFill = false;
 
   if (element.fill) {
+    appliedImageFill = await applyImageFillToNode(frame, element.fill, element.name || element.id);
+  }
+
+  if (!appliedImageFill) {
+    if (element.src) {
+      console.log(`[IMAGE] Looking for image: ${element.src}`);
+      const imageData = getImageDataFromCache(element.src);
+      if (imageData) {
+        try {
+          console.log(`[IMAGE] Found image data for: ${element.src}, loading...`);
+          const imageBytes = base64ToUint8Array(imageData.split(',')[1]);
+          const image = figma.createImage(imageBytes);
+          frame.fills = [{ type: 'IMAGE', scaleMode: 'FILL', imageHash: image.hash }];
+          console.log(`[IMAGE] ✅ Successfully loaded image: ${element.src}`);
+        } catch (e) {
+          console.error(`[IMAGE] ❌ Failed to load image ${element.src}:`, e);
+        }
+      } else {
+        console.warn(`[IMAGE] ⚠️ Image not found in cache: ${element.src}. Make sure to select the images folder.`);
+      }
+    } else {
+      console.warn(`[IMAGE] ⚠️ Image element has no src property`);
+    }
+  }
+
+  if (element.fill && !appliedImageFill) {
     const fill = parseColor(element.fill, variables, element.name || element.id);
     if (fill) frame.fills = [fill];
   }
@@ -1113,7 +1335,7 @@ function createLine(element, variables, parentNode = null) {
 }
 
 // Create vector/path
-function createVector(element, variables, parentNode = null) {
+async function createVector(element, variables, parentNode = null) {
   const width = parseDimension(element.width, 100);
   const height = parseDimension(element.height, 100);
 
@@ -1153,8 +1375,11 @@ function createVector(element, variables, parentNode = null) {
         }
 
         if (element.fill) {
-          const fill = parseColor(element.fill, variables, element.name || element.id);
-          if (fill) vector.fills = [fill];
+          const hasImageFill = await applyImageFillToNode(vector, element.fill, element.name || element.id);
+          if (!hasImageFill) {
+            const fill = parseColor(element.fill, variables, element.name || element.id);
+            if (fill) vector.fills = [fill];
+          }
         }
 
         if (element.stroke) {
@@ -1185,8 +1410,11 @@ function createVector(element, variables, parentNode = null) {
   }
 
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) placeholder.fills = [fill];
+    const hasImageFill = await applyImageFillToNode(placeholder, element.fill, element.name || element.id);
+    if (!hasImageFill) {
+      const fill = parseColor(element.fill, variables, element.name || element.id);
+      if (fill) placeholder.fills = [fill];
+    }
   } else {
     // Give it a subtle fill so it's visible
     placeholder.fills = [{ type: 'SOLID', color: { r: 0.7, g: 0.7, b: 0.7 }, opacity: 0.3 }];
@@ -1614,7 +1842,7 @@ async function createIconFont(element, variables, parentNode = null) {
 
 
 // Create group
-function createGroup(element, variables, parentNode = null) {
+async function createGroup(element, variables, parentNode = null) {
   const frame = figma.createFrame();
   frame.name = element.name || 'Group';
   frame.layoutMode = 'NONE';
@@ -1631,8 +1859,11 @@ function createGroup(element, variables, parentNode = null) {
   }
 
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) frame.fills = [fill];
+    const hasImageFill = await applyImageFillToNode(frame, element.fill, element.name || element.id);
+    if (!hasImageFill) {
+      const fill = parseColor(element.fill, variables, element.name || element.id);
+      if (fill) frame.fills = [fill];
+    }
   }
 
   return frame;
@@ -2239,7 +2470,7 @@ function copyNodeProperties(from, to) {
 
 // Helper: Base64 to Uint8Array
 function base64ToUint8Array(base64) {
-  const binaryString = atob(base64);
+  const binaryString = base64ToBinaryString(base64);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
@@ -2255,20 +2486,7 @@ async function exportToPen(mode) {
     throw new Error('No nodes to export');
   }
 
-  const penData = {
-    version: '2.7',
-    variables: {},
-    children: []
-  };
-
-  for (const node of nodes) {
-    const element = await nodeToElement(node);
-    if (element) {
-      penData.children.push(element);
-    }
-  }
-
-  return penData;
+  return convertNodesToPenBundle(nodes);
 }
 
 // Get all synced nodes
@@ -2291,7 +2509,7 @@ function getAllSyncedNodes() {
 }
 
 // Convert Figma node to pen element
-async function nodeToElement(node) {
+async function nodeToElement(node, exportContext = null) {
   let type = 'frame';
 
   // Map Figma types to pen types
@@ -2380,10 +2598,19 @@ async function nodeToElement(node) {
   }
 
   // Fill
-  if ('fills' in node && node.fills && node.fills.length > 0) {
+  if ('fills' in node && Array.isArray(node.fills) && node.fills.length > 0) {
     const fill = node.fills[0];
     if (fill.type === 'SOLID' && fill.visible !== false) {
       element.fill = rgbToHex(fill.color);
+    } else if (fill.type === 'IMAGE' && fill.visible !== false) {
+      const asset = await getExportImageAsset(fill, node, exportContext);
+      if (asset) {
+        element.fill = {
+          type: 'image',
+          url: `./${asset.fileName}`,
+          mode: mapFigmaImageModeToPen(fill.scaleMode)
+        };
+      }
     }
   }
 
@@ -2478,7 +2705,7 @@ async function nodeToElement(node) {
   if ('children' in node && node.children.length > 0) {
     element.children = [];
     for (const child of node.children) {
-      const childElement = await nodeToElement(child);
+      const childElement = await nodeToElement(child, exportContext);
       if (childElement) {
         element.children.push(childElement);
       }

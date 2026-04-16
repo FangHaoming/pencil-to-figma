@@ -449,23 +449,42 @@
       if (files.length > 0) {
         imagesData = {};
         let loadedCount = 0;
+        const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'));
         
-        for (const file of files) {
-          if (file.type.startsWith('image/')) {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-              imagesData[file.name] = event.target.result;
-              loadedCount++;
-              
-              if (loadedCount === files.length) {
-                document.getElementById('imagesInfo').innerHTML = `
-                  <div class="status success">✓ Loaded ${Object.keys(imagesData).length} images</div>
-                `;
-                document.getElementById('imagesInfo').style.display = 'block';
-              }
-            };
-            reader.readAsDataURL(file);
-          }
+        for (const file of imageFiles) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const dataUrl = event.target.result;
+            const relativePath = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
+            const normalizedPath = relativePath.replace(/^\/+/, '');
+            const pathWithoutRoot = normalizedPath.includes('/') ? normalizedPath.split('/').slice(1).join('/') : normalizedPath;
+
+            imagesData[file.name] = dataUrl;
+            imagesData[normalizedPath] = dataUrl;
+            imagesData[`./${normalizedPath}`] = dataUrl;
+
+            if (pathWithoutRoot) {
+              imagesData[pathWithoutRoot] = dataUrl;
+              imagesData[`./${pathWithoutRoot}`] = dataUrl;
+            }
+
+            loadedCount++;
+            
+            if (loadedCount === imageFiles.length) {
+              document.getElementById('imagesInfo').innerHTML = `
+                <div class="status success">✓ Loaded ${imageFiles.length} images</div>
+              `;
+              document.getElementById('imagesInfo').style.display = 'block';
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+
+        if (imageFiles.length === 0) {
+          document.getElementById('imagesInfo').innerHTML = `
+            <div class="status error">✗ No image files found in selected folder</div>
+          `;
+          document.getElementById('imagesInfo').style.display = 'block';
         }
       }
     });
@@ -541,6 +560,154 @@
         }, 3000);
       }
     }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function dataUrlToUint8Array(dataUrl) {
+      const parts = dataUrl.split(',');
+      const binary = atob(parts[1]);
+      const bytes = new Uint8Array(binary.length);
+
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      return bytes;
+    }
+
+    function makeCrc32Table() {
+      const table = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let j = 0; j < 8; j++) {
+          c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[i] = c >>> 0;
+      }
+      return table;
+    }
+
+    const CRC32_TABLE = makeCrc32Table();
+
+    function crc32(bytes) {
+      let crc = 0xFFFFFFFF;
+      for (let i = 0; i < bytes.length; i++) {
+        crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+      }
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    function writeUint16(view, offset, value) {
+      view.setUint16(offset, value, true);
+    }
+
+    function writeUint32(view, offset, value) {
+      view.setUint32(offset, value, true);
+    }
+
+    function createStoredZip(entries) {
+      const localParts = [];
+      const centralParts = [];
+      let offset = 0;
+
+      for (const entry of entries) {
+        const fileNameBytes = new TextEncoder().encode(entry.name);
+        const fileBytes = entry.data;
+        const fileCrc32 = crc32(fileBytes);
+
+        const localHeader = new Uint8Array(30 + fileNameBytes.length);
+        const localView = new DataView(localHeader.buffer);
+        writeUint32(localView, 0, 0x04034b50);
+        writeUint16(localView, 4, 20);
+        writeUint16(localView, 6, 0);
+        writeUint16(localView, 8, 0);
+        writeUint16(localView, 10, 0);
+        writeUint16(localView, 12, 0);
+        writeUint32(localView, 14, fileCrc32);
+        writeUint32(localView, 18, fileBytes.length);
+        writeUint32(localView, 22, fileBytes.length);
+        writeUint16(localView, 26, fileNameBytes.length);
+        writeUint16(localView, 28, 0);
+        localHeader.set(fileNameBytes, 30);
+        localParts.push(localHeader, fileBytes);
+
+        const centralHeader = new Uint8Array(46 + fileNameBytes.length);
+        const centralView = new DataView(centralHeader.buffer);
+        writeUint32(centralView, 0, 0x02014b50);
+        writeUint16(centralView, 4, 20);
+        writeUint16(centralView, 6, 20);
+        writeUint16(centralView, 8, 0);
+        writeUint16(centralView, 10, 0);
+        writeUint16(centralView, 12, 0);
+        writeUint16(centralView, 14, 0);
+        writeUint32(centralView, 16, fileCrc32);
+        writeUint32(centralView, 20, fileBytes.length);
+        writeUint32(centralView, 24, fileBytes.length);
+        writeUint16(centralView, 28, fileNameBytes.length);
+        writeUint16(centralView, 30, 0);
+        writeUint16(centralView, 32, 0);
+        writeUint16(centralView, 34, 0);
+        writeUint16(centralView, 36, 0);
+        writeUint32(centralView, 38, 0);
+        writeUint32(centralView, 42, offset);
+        centralHeader.set(fileNameBytes, 46);
+        centralParts.push(centralHeader);
+
+        offset += localHeader.length + fileBytes.length;
+      }
+
+      const centralDirectorySize = centralParts.reduce((sum, part) => sum + part.length, 0);
+      const endRecord = new Uint8Array(22);
+      const endView = new DataView(endRecord.buffer);
+      writeUint32(endView, 0, 0x06054b50);
+      writeUint16(endView, 4, 0);
+      writeUint16(endView, 6, 0);
+      writeUint16(endView, 8, entries.length);
+      writeUint16(endView, 10, entries.length);
+      writeUint32(endView, 12, centralDirectorySize);
+      writeUint32(endView, 16, offset);
+      writeUint16(endView, 20, 0);
+
+      return new Blob([...localParts, ...centralParts, endRecord], { type: 'application/zip' });
+    }
+
+    function toZipFilename(penFilename) {
+      return penFilename.replace(/\.pen$/i, '') + '.zip';
+    }
+
+    async function downloadExportPackage(penData, penFilename, assets = []) {
+      if (!assets.length) {
+        const penBlob = new Blob([JSON.stringify(penData, null, 2)], { type: 'application/json' });
+        downloadBlob(penBlob, penFilename);
+        return;
+      }
+
+      const textEncoder = new TextEncoder();
+      const zipEntries = [{
+        name: penFilename,
+        data: textEncoder.encode(JSON.stringify(penData, null, 2))
+      }];
+
+      for (const asset of assets) {
+        if (!asset || !asset.dataUrl || !asset.fileName) {
+          continue;
+        }
+        zipEntries.push({
+          name: asset.fileName,
+          data: dataUrlToUint8Array(asset.dataUrl)
+        });
+      }
+
+      const zipBlob = createStoredZip(zipEntries);
+      downloadBlob(zipBlob, toZipFilename(penFilename));
+    }
     
     // Display file analysis
     function displayAnalysis(analysis) {
@@ -588,16 +755,10 @@
         document.getElementById('imagesInfo').style.display = 'none';
         nextBtn.disabled = true;
       } else if (msg.type === 'export-data') {
-        // Download the pen file
-        const blob = new Blob([JSON.stringify(msg.data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'export.pen';
-        a.click();
-        URL.revokeObjectURL(url);
-        
-        showStatus('exportStatus', 'success', '✓ Export successful');
+        const assets = msg.assets || [];
+        downloadExportPackage(msg.data, 'export.pen', assets);
+        const suffix = assets.length > 0 ? `，已打包 ${assets.length} 张图片` : '';
+        showStatus('exportStatus', 'success', `✓ Export successful${suffix}`);
         exportBtn.disabled = false;
         exportBtn.textContent = '📤 Export';
       } else if (msg.type === 'export-error') {
@@ -617,19 +778,13 @@
         // Fetch icon SVG from CDN
         fetchIconSVG(msg.iconName, msg.iconFamily, msg.nodeId);
       } else if (msg.type === 'download-pen') {
-        // Download pen file from menu command
-        const blob = new Blob([JSON.stringify(msg.data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = msg.filename || 'export.pen';
-        a.click();
-        URL.revokeObjectURL(url);
+        const assets = msg.assets || [];
+        downloadExportPackage(msg.data, msg.filename || 'export.pen', assets);
         
         // Wait a bit before closing to ensure download starts
         setTimeout(() => {
           parent.postMessage({ pluginMessage: { type: 'close-after-download' } }, '*');
-        }, 200);
+        }, Math.max(800, 250 * (assets.length + 1)));
       }
     };
 
