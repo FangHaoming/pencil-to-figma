@@ -138,6 +138,13 @@ function mapFigmaImageModeToPen(scaleMode) {
   return 'stretch';
 }
 
+// Figma 插件里部分枚举属性可能不是 string，直接 .toLowerCase 会报 “not a function”
+function figmaEnumToLower(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.toLowerCase();
+  return String(value).toLowerCase();
+}
+
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 function uint8ArrayToBase64(bytes) {
@@ -257,6 +264,7 @@ async function getExportImageAsset(fill, node, exportContext) {
     return exportContext.assets.get(imageAssetKey);
   }
 
+  console.log('[EXPORT] getExportImageAsset', { nodeId: node.id, nodeType: node.type, imageHash: fill.imageHash });
   const image = figma.getImageByHash(fill.imageHash);
   if (image && typeof image.getBytesAsync === 'function') {
     try {
@@ -273,6 +281,7 @@ async function getExportImageAsset(fill, node, exportContext) {
       exportContext.assets.set(imageAssetKey, asset);
       return asset;
     } catch (error) {
+      console.warn('[EXPORT] getBytesAsync failed', { nodeId: node.id, message: error && error.message });
     }
   }
 
@@ -288,10 +297,38 @@ async function getExportImageAsset(fill, node, exportContext) {
       exportContext.assets.set(assetKey, asset);
       return asset;
     } catch (error) {
+      console.warn('[EXPORT] exportAsync fallback failed', { nodeId: node.id, message: error && error.message });
     }
   }
 
+  console.warn('[EXPORT] getExportImageAsset: no asset for node', node.id);
   return null;
+}
+
+/** Export any node as PNG into the bundle (used for locked groups → single raster). */
+async function exportNodeToPngAsset(node, exportContext) {
+  if (!exportContext || typeof node.exportAsync !== 'function') {
+    return null;
+  }
+
+  const assetKey = `raster:${node.id}`;
+  if (exportContext.assets.has(assetKey)) {
+    return exportContext.assets.get(assetKey);
+  }
+
+  try {
+    const bytes = await node.exportAsync({ format: 'PNG' });
+    const asset = {
+      fileName: `${sanitizeFileNamePart(node.name || node.type || 'image')}-${sanitizeFileNamePart(node.id, 'node')}.png`,
+      mimeType: 'image/png',
+      dataUrl: `data:image/png;base64,${uint8ArrayToBase64(bytes)}`
+    };
+    exportContext.assets.set(assetKey, asset);
+    return asset;
+  } catch (error) {
+    console.warn('[EXPORT] exportNodeToPngAsset failed', { nodeId: node.id, message: error && error.message });
+    return null;
+  }
 }
 
 function makePostMessageSafe(value) {
@@ -325,6 +362,7 @@ function makePostMessageSafe(value) {
 }
 
 async function convertNodesToPenBundle(nodes) {
+  console.log('[EXPORT] convertNodesToPenBundle start', { count: nodes.length });
   const exportContext = { assets: new Map() };
   const penData = {
     version: '2.7',
@@ -332,7 +370,9 @@ async function convertNodesToPenBundle(nodes) {
     children: []
   };
 
-  for (const node of nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    console.log('[EXPORT] top-level node', i, { id: node.id, type: node.type, name: node.name });
     const element = await nodeToElement(node, exportContext);
     if (element) {
       penData.children.push(element);
@@ -373,9 +413,16 @@ figma.ui.onmessage = async (msg) => {
     }
   } else if (msg.type === 'export-pen') {
     try {
+      console.log('[EXPORT] export-pen message', { mode: msg.mode });
       const exportBundle = await exportToPen(msg.mode);
+      const penChildren = exportBundle && exportBundle.penData && exportBundle.penData.children;
+      console.log('[EXPORT] export bundle ready', {
+        topLevelChildren: penChildren ? penChildren.length : 0,
+        assets: exportBundle && Array.isArray(exportBundle.assets) ? exportBundle.assets.length : 'n/a'
+      });
       figma.ui.postMessage({ type: 'export-data', data: exportBundle.penData, assets: exportBundle.assets });
     } catch (error) {
+      console.error('[EXPORT] export-pen failed', error && error.message, error && error.stack);
       figma.ui.postMessage({ type: 'export-error', error: error.message });
     }
   } else if (msg.type === 'icon-svg-fetched') {
@@ -2510,7 +2557,9 @@ function base64ToUint8Array(base64) {
 
 // Export to pen format
 async function exportToPen(mode) {
+  console.log('[EXPORT] exportToPen', { mode, page: figma.currentPage.name });
   const nodes = mode === 'selection' ? figma.currentPage.selection : getAllSyncedNodes();
+  console.log('[EXPORT] nodes to export', { count: nodes.length, mode });
 
   if (nodes.length === 0) {
     throw new Error('No nodes to export');
@@ -2540,6 +2589,22 @@ function getAllSyncedNodes() {
 
 // Convert Figma node to pen element
 async function nodeToElement(node, exportContext = null, parentNode = null) {
+  try {
+    return await nodeToElementImpl(node, exportContext, parentNode);
+  } catch (err) {
+    console.error('[EXPORT] nodeToElement error', {
+      id: node && node.id,
+      type: node && node.type,
+      name: node && node.name,
+      parentType: parentNode && parentNode.type,
+      message: err && err.message,
+      stack: err && err.stack
+    });
+    throw err;
+  }
+}
+
+async function nodeToElementImpl(node, exportContext = null, parentNode = null) {
   let type = 'frame';
 
   // Map Figma types to pen types
@@ -2581,6 +2646,22 @@ async function nodeToElement(node, exportContext = null, parentNode = null) {
   }
   if ('height' in node && node.height !== undefined) {
     element.height = Math.round(node.height * 100) / 100;
+  }
+
+  // Locked GROUP: rasterize to one image instead of exporting children separately.
+  // Use type "frame" + image fill (same as FRAME with IMAGE fill) — Pencil rejects top-level type "image".
+  if (node.type === 'GROUP' && node.locked === true) {
+    const rasterAsset = await exportNodeToPngAsset(node, exportContext);
+    if (rasterAsset) {
+      element.type = 'frame';
+      element.layout = 'none';
+      element.fill = {
+        type: 'image',
+        url: `./${rasterAsset.fileName}`,
+        mode: 'fill'
+      };
+      return element;
+    }
   }
 
   // Frame-specific properties
@@ -2643,9 +2724,21 @@ async function nodeToElement(node, exportContext = null, parentNode = null) {
   // Fill
   if ('fills' in node && Array.isArray(node.fills) && node.fills.length > 0) {
     const fill = node.fills[0];
-    if (fill.type === 'SOLID' && fill.visible !== false) {
-      element.fill = rgbToHex(fill.color);
-    } else if (fill.type === 'IMAGE' && fill.visible !== false) {
+    if (fill.visible === false) {
+      // skip invisible top fill
+    } else if (fill.type === 'SOLID') {
+      element.fill = figmaSolidPaintToPenColor(fill);
+    } else if (
+      fill.type === 'GRADIENT_LINEAR' ||
+      fill.type === 'GRADIENT_RADIAL' ||
+      fill.type === 'GRADIENT_ANGULAR' ||
+      fill.type === 'GRADIENT_DIAMOND'
+    ) {
+      const penGrad = figmaGradientPaintToPenGradient(fill);
+      if (penGrad) {
+        element.fill = penGrad;
+      }
+    } else if (fill.type === 'IMAGE') {
       const asset = await getExportImageAsset(fill, node, exportContext);
       if (asset) {
         element.fill = {
@@ -2660,18 +2753,40 @@ async function nodeToElement(node, exportContext = null, parentNode = null) {
   // Stroke
   if ('strokes' in node && node.strokes && node.strokes.length > 0 && node.strokeWeight > 0) {
     const stroke = node.strokes[0];
-    if (stroke.type === 'SOLID') {
+    if (stroke.visible === false) {
+      // no stroke
+    } else if (stroke.type === 'SOLID') {
       element.stroke = {
-        align: node.strokeAlign ? node.strokeAlign.toLowerCase() : 'inside',
+        align: node.strokeAlign ? figmaEnumToLower(node.strokeAlign) : 'inside',
         thickness: node.strokeWeight,
-        fill: rgbToHex(stroke.color)
+        fill: figmaSolidPaintToPenColor(stroke) || rgbToHex(stroke.color)
       };
 
       if (node.strokeCap) {
-        element.stroke.cap = node.strokeCap.toLowerCase();
+        element.stroke.cap = figmaEnumToLower(node.strokeCap);
       }
       if (node.strokeJoin) {
-        element.stroke.join = node.strokeJoin.toLowerCase();
+        element.stroke.join = figmaEnumToLower(node.strokeJoin);
+      }
+    } else if (
+      stroke.type === 'GRADIENT_LINEAR' ||
+      stroke.type === 'GRADIENT_RADIAL' ||
+      stroke.type === 'GRADIENT_ANGULAR' ||
+      stroke.type === 'GRADIENT_DIAMOND'
+    ) {
+      const penGrad = figmaGradientPaintToPenGradient(stroke);
+      if (penGrad) {
+        element.stroke = {
+          align: node.strokeAlign ? figmaEnumToLower(node.strokeAlign) : 'inside',
+          thickness: node.strokeWeight,
+          fill: penGrad
+        };
+        if (node.strokeCap) {
+          element.stroke.cap = figmaEnumToLower(node.strokeCap);
+        }
+        if (node.strokeJoin) {
+          element.stroke.join = figmaEnumToLower(node.strokeJoin);
+        }
       }
     }
   }
@@ -2828,6 +2943,74 @@ function rgbaToHex(rgba) {
   const b = Math.round(rgba.b * 255).toString(16).padStart(2, '0');
   const a = Math.round(rgba.a * 255).toString(16).padStart(2, '0');
   return '#' + r + g + b + a;
+}
+
+/** Figma gradient paint → Pencil { type: 'gradient', ... } (mirrors convertToFigmaGradient / parseColor) */
+function figmaGradientPaintToPenGradient(paint) {
+  if (!paint || !paint.gradientStops || paint.gradientStops.length === 0) {
+    return null;
+  }
+  const gt = paint.gradientTransform;
+  if (!gt || gt.length < 2 || !gt[0] || !gt[1]) {
+    return null;
+  }
+
+  const paintOpacity = paint.opacity !== undefined && paint.opacity !== null ? paint.opacity : 1;
+  const stops = [];
+  for (let i = 0; i < paint.gradientStops.length; i++) {
+    const s = paint.gradientStops[i];
+    if (!s || s.color === undefined) continue;
+    const c = s.color;
+    const baseA = c.a !== undefined && c.a !== null ? c.a : 1;
+    const rgba = {
+      r: c.r,
+      g: c.g,
+      b: c.b,
+      a: baseA * paintOpacity
+    };
+    stops.push({
+      position: s.position,
+      color: rgbaToHex(rgba)
+    });
+  }
+  if (stops.length === 0) {
+    return null;
+  }
+
+  const t = paint.type;
+  const a00 = gt[0][0];
+  const a10 = gt[1][0];
+  let gradientType = 'linear';
+  let rotation = 0;
+
+  if (t === 'GRADIENT_RADIAL') {
+    gradientType = 'radial';
+  } else {
+    gradientType = 'linear';
+    rotation = (Math.atan2(a10, a00) * 180) / Math.PI;
+  }
+
+  const out = {
+    type: 'gradient',
+    gradientType: gradientType,
+    stops: stops
+  };
+  if (gradientType === 'linear') {
+    out.rotation = rotation;
+  }
+  return out;
+}
+
+function figmaSolidPaintToPenColor(paint) {
+  if (!paint || paint.type !== 'SOLID' || !paint.color) return null;
+  const c = paint.color;
+  const baseA = c.a !== undefined && c.a !== null ? c.a : 1;
+  const po = paint.opacity !== undefined && paint.opacity !== null ? paint.opacity : 1;
+  const a = baseA * po;
+  if (a < 0.999) {
+    return rgbaToHex({ r: c.r, g: c.g, b: c.b, a: a });
+  }
+  return rgbToHex(c);
 }
 
 // Generate random ID

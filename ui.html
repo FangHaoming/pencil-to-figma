@@ -528,6 +528,7 @@
     // Export button
     exportBtn.addEventListener('click', () => {
       const mode = document.querySelector('input[name="exportMode"]:checked').value;
+      console.log('[EXPORT UI] Export clicked', { mode });
       
       exportBtn.disabled = true;
       exportBtn.textContent = 'Exporting...';
@@ -756,12 +757,26 @@
         nextBtn.disabled = true;
       } else if (msg.type === 'export-data') {
         const assets = msg.assets || [];
-        downloadExportPackage(msg.data, 'export.pen', assets);
+        console.log('[EXPORT UI] export-data received', {
+          hasData: !!msg.data,
+          children: msg.data && msg.data.children && msg.data.children.length,
+          assetCount: assets.length
+        });
+        try {
+          downloadExportPackage(msg.data, 'export.pen', assets);
+        } catch (e) {
+          console.error('[EXPORT UI] downloadExportPackage failed', e && e.message, e && e.stack);
+          showStatus('exportStatus', 'error', '✗ Error: ' + (e.message || String(e)));
+          exportBtn.disabled = false;
+          exportBtn.textContent = '📤 Export';
+          return;
+        }
         const suffix = assets.length > 0 ? `，已打包 ${assets.length} 张图片` : '';
         showStatus('exportStatus', 'success', `✓ Export successful${suffix}`);
         exportBtn.disabled = false;
         exportBtn.textContent = '📤 Export';
       } else if (msg.type === 'export-error') {
+        console.error('[EXPORT UI] export-error', msg.error);
         showStatus('exportStatus', 'error', '✗ Error: ' + msg.error);
         exportBtn.disabled = false;
         exportBtn.textContent = '📤 Export';
