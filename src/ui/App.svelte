@@ -266,7 +266,7 @@
 
     if (msg.type === 'export-data') {
       const assets = msg.assets || [];
-      void downloadExportPackage(msg.data, 'export.pen', assets)
+      void downloadExportPackage(msg.data, 'index.pen', assets)
         .then(() => {
           const suffix = assets.length > 0 ? `，已打包 ${assets.length} 张图片` : '';
           setStatus('export', {
@@ -309,7 +309,7 @@
 
     if (msg.type === 'download-pen') {
       const assets = msg.assets || [];
-      void downloadExportPackage(msg.data, msg.filename || 'export.pen', assets).then(() => {
+      void downloadExportPackage(msg.data, msg.filename || 'index.pen', assets).then(() => {
         window.setTimeout(() => {
           postPluginMessage({ type: 'close-after-download' });
         }, Math.max(800, 250 * (assets.length + 1)));
