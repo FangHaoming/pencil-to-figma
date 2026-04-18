@@ -1,15 +1,15 @@
 {
-  "name": "Pencil.dev Sync",
+  "name": "Pencil Sync",
   "id": "1626500539119583583",
   "documentAccess": "dynamic-page",
   "api": "1.0.0",
-  "main": "code.js",
+  "main": "dist/code.js",
   "capabilities": [],
   "enableProposedApi": false,
   "editorType": [
     "figma"
   ],
-  "ui": "ui.html",
+  "ui": "dist/ui.html",
   "networkAccess": {
     "allowedDomains": [
       "none"

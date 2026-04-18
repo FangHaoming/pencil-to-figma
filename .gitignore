@@ -15,13 +15,12 @@ Thumbs.db
 dist/
 build/
 
+.cursor
+
 # Logs
 *.log
 npm-debug.log*
 
-# Temporary files
-*.tmp
-.temp/
 
 # Environment variables
 .env
