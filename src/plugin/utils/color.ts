@@ -4,6 +4,7 @@ type VariableMap = Record<string, unknown> | undefined;
 type PenGradientFill = Extract<PenFill, { type: 'gradient' }>;
 type ColorObjectFill = Extract<PenColor, { type: 'color' }>;
 type GradientStopInput = PenGradientStop | PenColor;
+type FigmaColorPaint = SolidPaint | GradientPaint;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -103,11 +104,11 @@ export function convertToFigmaGradient(
     ? (() => {
         const rotation = typeof gradientObject.rotation === 'number' ? gradientObject.rotation : 0;
         const angleRad = (rotation * Math.PI) / 180;
-        const cos = Math.cos(angleRad);
-        const sin = Math.sin(angleRad);
+        const dx = -Math.sin(angleRad);
+        const dy = Math.cos(angleRad);
         return [
-          [cos, -sin, 0.5 - 0.5 * cos + 0.5 * sin],
-          [sin, cos, 0.5 - 0.5 * sin - 0.5 * cos]
+          [dx, -dy, 0.5 - 0.5 * dx + 0.5 * dy],
+          [dy, dx, 0.5 - 0.5 * dy - 0.5 * dx]
         ];
       })()
     : [
@@ -160,7 +161,39 @@ export function parseColor(
   colorValue: unknown,
   variables: VariableMap,
   context?: string
-): SolidPaint | GradientPaint | null {
+): FigmaColorPaint | null {
+  if (Array.isArray(colorValue)) {
+    return parsePaints(colorValue, variables, context)[0] || null;
+  }
+
+  return parseSingleColor(colorValue, variables, context);
+}
+
+export function parsePaints(
+  colorValue: unknown,
+  variables: VariableMap,
+  context?: string
+): FigmaColorPaint[] {
+  if (!colorValue) return [];
+
+  const values = Array.isArray(colorValue) ? colorValue : [colorValue];
+  const paints: FigmaColorPaint[] = [];
+
+  for (const value of values) {
+    const paint = parseSingleColor(value, variables, context);
+    if (paint) {
+      paints.push(paint);
+    }
+  }
+
+  return paints;
+}
+
+function parseSingleColor(
+  colorValue: unknown,
+  variables: VariableMap,
+  context?: string
+): FigmaColorPaint | null {
   if (!colorValue) return null;
 
   if (isRecord(colorValue) && colorValue.enabled === false) {
@@ -282,9 +315,9 @@ export function applyStroke(
   const thickness = stroke.thickness || 1;
   const fill = stroke.fill || '#000000';
 
-  const color = parseColor(fill, variables, context);
-  if (color) {
-    node.strokes = [color];
+  const paints = parsePaints(fill, variables, context);
+  if (paints.length > 0) {
+    node.strokes = paints;
 
     if (typeof thickness === 'object') {
       node.strokeWeight = thickness.top || 1;
@@ -312,26 +345,40 @@ export function applyEffect(
   void variables;
   if (!effect) return;
 
-  const resolvedEffect = Array.isArray(effect) ? effect[0] : effect;
-  if (!resolvedEffect) return;
+  const resolvedEffects = Array.isArray(effect) ? effect : [effect];
+  const figmaEffects: Effect[] = [];
 
-  if (resolvedEffect.type === 'shadow') {
-    const supportsClipsContent = 'clipsContent' in node;
-    const hasClipsEnabled = supportsClipsContent && Boolean((node as FrameNode).clipsContent);
+  for (const resolvedEffect of resolvedEffects) {
+    if (!resolvedEffect) continue;
 
-    const shadowEffect: DropShadowEffect | InnerShadowEffect = {
-      type: resolvedEffect.shadowType === 'inner' ? 'INNER_SHADOW' : 'DROP_SHADOW',
-      color: hexToRgba(resolvedEffect.color || '#00000026'),
-      offset: {
-        x: resolvedEffect.offset && resolvedEffect.offset.x !== undefined ? resolvedEffect.offset.x : 0,
-        y: resolvedEffect.offset && resolvedEffect.offset.y !== undefined ? resolvedEffect.offset.y : 0
-      },
-      radius: resolvedEffect.blur || 0,
-      spread: hasClipsEnabled ? (resolvedEffect.spread || 0) : 0,
-      visible: true,
-      blendMode: 'NORMAL'
-    };
-    (node as SceneNode & { effects: ReadonlyArray<Effect> }).effects = [shadowEffect];
+    if (resolvedEffect.type === 'shadow') {
+      const supportsClipsContent = 'clipsContent' in node;
+      const hasClipsEnabled = supportsClipsContent && Boolean((node as FrameNode).clipsContent);
+
+      const shadowEffect: DropShadowEffect | InnerShadowEffect = {
+        type: resolvedEffect.shadowType === 'inner' ? 'INNER_SHADOW' : 'DROP_SHADOW',
+        color: hexToRgba(resolvedEffect.color || '#00000026'),
+        offset: {
+          x: resolvedEffect.offset && resolvedEffect.offset.x !== undefined ? resolvedEffect.offset.x : 0,
+          y: resolvedEffect.offset && resolvedEffect.offset.y !== undefined ? resolvedEffect.offset.y : 0
+        },
+        radius: resolvedEffect.blur || 0,
+        spread: hasClipsEnabled ? (resolvedEffect.spread || 0) : 0,
+        visible: true,
+        blendMode: 'NORMAL'
+      };
+      figmaEffects.push(shadowEffect);
+    } else if (resolvedEffect.type === 'blur' || resolvedEffect.type === 'background_blur') {
+      figmaEffects.push({
+        type: resolvedEffect.type === 'background_blur' ? 'BACKGROUND_BLUR' : 'LAYER_BLUR',
+        radius: resolvedEffect.radius || 0,
+        visible: true
+      } as Effect);
+    }
+  }
+
+  if (figmaEffects.length > 0) {
+    (node as SceneNode & { effects: ReadonlyArray<Effect> }).effects = figmaEffects;
   }
 }
 
@@ -373,7 +420,7 @@ export function figmaGradientPaintToPenGradient(paint: GradientPaint): Record<st
   }
 
   const paintOpacity = paint.opacity !== undefined && paint.opacity !== null ? paint.opacity : 1;
-  const stops: Array<{ position: number; color: string }> = [];
+  const colors: Array<{ position: number; color: string }> = [];
   for (let i = 0; i < paint.gradientStops.length; i++) {
     const stop = paint.gradientStops[i];
     if (!stop || stop.color === undefined) continue;
@@ -385,12 +432,12 @@ export function figmaGradientPaintToPenGradient(paint: GradientPaint): Record<st
       b: c.b,
       a: baseA * paintOpacity
     };
-    stops.push({
+    colors.push({
       position: stop.position,
       color: rgbaToHex(rgba)
     });
   }
-  if (stops.length === 0) {
+  if (colors.length === 0) {
     return null;
   }
 
@@ -403,13 +450,13 @@ export function figmaGradientPaintToPenGradient(paint: GradientPaint): Record<st
     gradientType = 'radial';
   } else {
     gradientType = 'linear';
-    rotation = (Math.atan2(a10, a00) * 180) / Math.PI;
+    rotation = (Math.atan2(-a00, a10) * 180) / Math.PI;
   }
 
   const out: Record<string, unknown> = {
     type: 'gradient',
     gradientType,
-    stops
+    colors
   };
   if (gradientType === 'linear') {
     out.rotation = rotation;

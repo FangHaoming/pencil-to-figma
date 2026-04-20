@@ -1,4 +1,4 @@
-import { parseColor, resolveVariable } from '../utils/color';
+import { parsePaints, resolveVariable } from '../utils/color';
 import {
   mapFontWeight,
   mapTextAlign,
@@ -7,6 +7,7 @@ import {
 } from '../utils/layout';
 import { applyNodePosition } from './shared.js';
 import type { NodeElement, NodeFactoryDeps, ParentNodeLike, VariableMap } from './types.js';
+import type { PenTextSegment } from '../../shared/pen';
 
 export async function createText(
   element: NodeElement,
@@ -14,53 +15,21 @@ export async function createText(
   deps: NodeFactoryDeps,
   parentNode: ParentNodeLike = null
 ): Promise<TextNode> {
+  void deps;
   const text = figma.createText();
 
-  const fontFamily = element.fontFamily ? String(resolveVariable(element.fontFamily, variables)) : 'Inter';
-  const fontWeight = element.fontWeight || 'Regular';
+  const segments = normalizeTextSegments(element);
+  const defaultStyle = getDefaultTextStyle(element, segments);
+  const defaultFont = await loadFontOrFallback(defaultStyle, variables, element);
+  text.fontName = defaultFont;
+  text.characters = getTextContent(element, segments);
 
-  let fontStyle = mapFontWeight(fontWeight);
-  if (element.fontStyle === 'italic') {
-    fontStyle = fontStyle.includes('Italic') ? fontStyle : `${fontStyle} Italic`.trim();
+  if (defaultStyle.fontSize) {
+    text.fontSize = defaultStyle.fontSize;
   }
 
-  try {
-    await figma.loadFontAsync({ family: fontFamily, style: fontStyle });
-    text.fontName = { family: fontFamily, style: fontStyle };
-  } catch (e) {
-    if (element.fontStyle === 'italic') {
-      try {
-        const baseStyle = mapFontWeight(fontWeight);
-        await figma.loadFontAsync({ family: fontFamily, style: baseStyle });
-        text.fontName = { family: fontFamily, style: baseStyle };
-      } catch (e2) {
-        try {
-          await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-          text.fontName = { family: 'Inter', style: 'Regular' };
-        } catch (e3) {
-          console.error('Failed to load any font:', e3);
-          throw new Error('Cannot load font for text: ' + (element.name || element.content));
-        }
-      }
-    } else {
-      try {
-        await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-        text.fontName = { family: 'Inter', style: 'Regular' };
-      } catch (e2) {
-        console.error('Failed to load fallback font:', e2);
-        throw new Error('Cannot load font for text: ' + (element.name || element.content));
-      }
-    }
-  }
-
-  text.characters = element.content || '';
-
-  if (element.fontSize) {
-    text.fontSize = element.fontSize;
-  }
-
-  if (element.lineHeight) {
-    text.lineHeight = { unit: 'PERCENT', value: element.lineHeight * 100 };
+  if (defaultStyle.lineHeight) {
+    text.lineHeight = { unit: 'PERCENT', value: defaultStyle.lineHeight * 100 };
   }
 
   if (element.textAlign) {
@@ -72,21 +41,161 @@ export async function createText(
   }
 
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) {
-      text.fills = [fill];
+    const fills = parsePaints(element.fill, variables, element.name || element.id);
+    if (fills.length > 0) {
+      text.fills = fills;
     }
+  }
+
+  if (segments.length > 0) {
+    await applyTextSegments(text, segments, element, variables);
   }
 
   applyNodePosition(text, element, parentNode);
 
-  if (element.width) {
-    const width = parseDimension(element.width, text.width);
-    if (element.textGrowth === 'fixed-width') {
-      text.textAutoResize = 'HEIGHT';
-      text.resize(width, text.height);
+  applyTextSizing(text, element);
+
+  return text;
+}
+
+type TextStyleInput = Pick<NodeElement, 'fontFamily' | 'fontWeight' | 'fontStyle' | 'fontSize' | 'lineHeight' | 'fill'>;
+type RangeTextNode = TextNode & {
+  setRangeFontName?: (start: number, end: number, value: FontName) => void;
+  setRangeFontSize?: (start: number, end: number, value: number) => void;
+  setRangeFills?: (start: number, end: number, value: Paint[]) => void;
+  setRangeLineHeight?: (start: number, end: number, value: LineHeight) => void;
+};
+
+function normalizeTextSegments(element: NodeElement): PenTextSegment[] {
+  if (!Array.isArray(element.segments)) {
+    return [];
+  }
+
+  return element.segments.filter((segment): segment is PenTextSegment => {
+    return Boolean(segment && typeof segment.content === 'string' && segment.content.length > 0);
+  });
+}
+
+function getTextContent(element: NodeElement, segments: PenTextSegment[]): string {
+  if (segments.length > 0) {
+    return segments.map((segment) => segment.content).join('');
+  }
+
+  return element.content || '';
+}
+
+function getDefaultTextStyle(element: NodeElement, segments: PenTextSegment[]): TextStyleInput {
+  const firstSegment = segments[0];
+  return {
+    fontFamily: element.fontFamily ?? firstSegment?.fontFamily,
+    fontWeight: element.fontWeight ?? firstSegment?.fontWeight,
+    fontStyle: element.fontStyle ?? firstSegment?.fontStyle,
+    fontSize: element.fontSize ?? firstSegment?.fontSize,
+    lineHeight: element.lineHeight ?? firstSegment?.lineHeight,
+    fill: element.fill ?? firstSegment?.fill
+  };
+}
+
+async function loadFontOrFallback(
+  style: Pick<TextStyleInput, 'fontFamily' | 'fontWeight' | 'fontStyle'>,
+  variables: VariableMap,
+  element: Pick<NodeElement, 'name' | 'content' | 'id'>
+): Promise<FontName> {
+  const fontFamily = style.fontFamily ? String(resolveVariable(style.fontFamily, variables)) : 'Inter';
+  const fontWeight = style.fontWeight || 'Regular';
+  const baseStyle = mapFontWeight(fontWeight);
+  const italicStyle = style.fontStyle === 'italic'
+    ? (baseStyle.includes('Italic') ? baseStyle : `${baseStyle} Italic`.trim())
+    : baseStyle;
+
+  const candidates: FontName[] = [{ family: fontFamily, style: italicStyle }];
+  if (italicStyle !== baseStyle) {
+    candidates.push({ family: fontFamily, style: baseStyle });
+  }
+  candidates.push({ family: 'Inter', style: 'Regular' });
+
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      await figma.loadFontAsync(candidate);
+      return candidate;
+    } catch (error) {
+      lastError = error;
     }
   }
 
-  return text;
+  console.error('Failed to load any font:', lastError);
+  throw new Error('Cannot load font for text: ' + (element.name || element.content || element.id || 'Unnamed text'));
+}
+
+async function applyTextSegments(
+  text: RangeTextNode,
+  segments: PenTextSegment[],
+  element: NodeElement,
+  variables: VariableMap
+): Promise<void> {
+  let start = 0;
+
+  for (const segment of segments) {
+    const end = start + segment.content.length;
+    const rangeStyle = {
+      fontFamily: segment.fontFamily ?? element.fontFamily,
+      fontWeight: segment.fontWeight ?? element.fontWeight,
+      fontStyle: segment.fontStyle ?? element.fontStyle
+    };
+
+    if (text.setRangeFontName) {
+      const fontName = await loadFontOrFallback(rangeStyle, variables, element);
+      text.setRangeFontName(start, end, fontName);
+    }
+
+    if (typeof segment.fontSize === 'number' && text.setRangeFontSize) {
+      text.setRangeFontSize(start, end, segment.fontSize);
+    }
+
+    if (typeof segment.lineHeight === 'number' && text.setRangeLineHeight) {
+      text.setRangeLineHeight(start, end, {
+        unit: 'PERCENT',
+        value: segment.lineHeight * 100
+      });
+    }
+
+    if (segment.fill !== undefined && text.setRangeFills) {
+      const fills = parsePaints(segment.fill, variables, element.name || element.id);
+      if (fills.length > 0) {
+        text.setRangeFills(start, end, fills as Paint[]);
+      }
+    }
+
+    start = end;
+  }
+}
+
+function applyTextSizing(text: TextNode, element: NodeElement): void {
+  if (element.textGrowth === 'auto') {
+    text.textAutoResize = 'WIDTH_AND_HEIGHT';
+    return;
+  }
+
+  if (element.textGrowth === 'fixed-width') {
+    text.textAutoResize = 'HEIGHT';
+    if (element.width) {
+      const width = parseDimension(element.width, text.width);
+      text.resize(width, text.height);
+    }
+    return;
+  }
+
+  if (element.textGrowth === 'fixed-width-height') {
+    text.textAutoResize = 'NONE';
+    const width = element.width ? parseDimension(element.width, text.width) : text.width;
+    const height = element.height ? parseDimension(element.height, text.height) : text.height;
+    text.resize(width, height);
+    return;
+  }
+
+  if (element.width) {
+    const width = parseDimension(element.width, text.width);
+    text.resize(width, text.height);
+  }
 }

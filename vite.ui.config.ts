@@ -1,10 +1,11 @@
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vite';
 
 const rootDir = resolve('.');
+const pluginSourceDir = resolve(rootDir, 'src/plugin');
 
 function resolveBuiltAssetPath(assetPath: string): string {
   return resolve(rootDir, 'dist', assetPath.replace(/^\/+/, ''));
@@ -47,8 +48,36 @@ function inlineUiScriptPlugin(): Plugin {
   };
 }
 
+async function collectPluginSourceFiles(dirPath: string): Promise<string[]> {
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = resolve(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        return collectPluginSourceFiles(entryPath);
+      }
+
+      return entry.name.endsWith('.ts') ? [entryPath] : [];
+    })
+  );
+
+  return files.flat();
+}
+
+function watchPluginSourcesPlugin(): Plugin {
+  return {
+    name: 'watch-plugin-sources',
+    async buildStart() {
+      const pluginFiles = await collectPluginSourceFiles(pluginSourceDir);
+      for (const filePath of pluginFiles) {
+        this.addWatchFile(filePath);
+      }
+    }
+  };
+}
+
 export default defineConfig({
-  plugins: [svelte(), inlineUiScriptPlugin()],
+  plugins: [svelte(), watchPluginSourcesPlugin(), inlineUiScriptPlugin()],
   build: {
     outDir: 'dist',
     emptyOutDir: false,

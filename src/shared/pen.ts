@@ -40,14 +40,19 @@ export type PenStroke = {
   fill?: PenFill | PenFill[];
 };
 
-export type PenEffect = {
-  type: 'shadow';
-  shadowType?: 'inner' | 'outer';
-  color?: string;
-  offset?: { x: number; y: number };
-  blur?: number;
-  spread?: number;
-};
+export type PenEffect =
+  | {
+      type: 'shadow';
+      shadowType?: 'inner' | 'outer';
+      color?: string;
+      offset?: { x: number; y: number };
+      blur?: number;
+      spread?: number;
+    }
+  | {
+      type: 'blur' | 'background_blur';
+      radius?: number;
+    };
 
 export interface PenBaseElement {
   id?: string;
@@ -77,6 +82,17 @@ export interface PenTextElement extends PenBaseElement {
   textAlign?: 'left' | 'center' | 'right' | 'justify';
   textAlignVertical?: 'top' | 'middle' | 'bottom';
   textGrowth?: 'auto' | 'fixed-width' | 'fixed-width-height';
+  segments?: PenTextSegment[];
+}
+
+export interface PenTextSegment {
+  content: string;
+  fontFamily?: string;
+  fontSize?: number;
+  fontWeight?: string | number;
+  fontStyle?: string;
+  lineHeight?: number;
+  fill?: PenFill | PenFill[];
 }
 
 export interface PenFrameElement extends PenBaseElement {

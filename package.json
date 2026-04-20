@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build --config vite.plugin.config.ts && vite build --config vite.ui.config.ts",
+    "build": "rm -rf dist && vite build --config vite.plugin.config.ts && vite build --config vite.ui.config.ts",
     "dev": "vite build --watch --config vite.plugin.config.ts & vite build --watch --config vite.ui.config.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"

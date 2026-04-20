@@ -1,4 +1,4 @@
-import type { PenEffect, PenElement, PenFill, PenSizing, PenStroke } from '../../shared/pen';
+import type { PenEffect, PenElement, PenFill, PenSizing, PenStroke, PenTextSegment } from '../../shared/pen';
 
 export type VariableMap = Record<string, unknown> | undefined;
 
@@ -37,6 +37,7 @@ export type NodeElement = PenElement & {
   textAlign?: 'left' | 'center' | 'right' | 'justify';
   textAlignVertical?: 'top' | 'middle' | 'bottom';
   textGrowth?: 'auto' | 'fixed-width' | 'fixed-width-height';
+  segments?: PenTextSegment[];
   geometry?: string;
   d?: string;
   pathData?: string;

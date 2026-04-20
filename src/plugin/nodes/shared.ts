@@ -1,4 +1,4 @@
-import { parseColor } from '../utils/color';
+import { parsePaints } from '../utils/color';
 import { applyImageFillToNode } from '../utils/image';
 import type { NodeElement, ParentNodeLike, VariableMap } from './types.js';
 
@@ -67,9 +67,9 @@ export async function applyNodeFill<T extends GeometryMixin & SceneNode>(
     return true;
   }
 
-  const fill = parseColor(fillValue, variables, label);
-  if (fill) {
-    node.fills = [fill];
+  const fills = parsePaints(fillValue, variables, label);
+  if (fills.length > 0) {
+    node.fills = fills;
   } else if (emptyOnColorMiss) {
     node.fills = [];
   }

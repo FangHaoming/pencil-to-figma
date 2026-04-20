@@ -1,4 +1,4 @@
-import { applyStroke, parseColor } from '../utils/color';
+import { applyStroke, parsePaints } from '../utils/color';
 import { parseDimension } from '../utils/layout';
 import { convertSvgPathToFigma } from '../utils/svg';
 import { applyNodeFill, applyNodePosition } from './shared.js';
@@ -122,9 +122,9 @@ export async function createIconFont(
   }
 
   if (element.fill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) {
-      vector.fills = [fill];
+    const fills = parsePaints(element.fill, variables, element.name || element.id);
+    if (fills.length > 0) {
+      vector.fills = fills;
     } else {
       vector.fills = [{ type: 'SOLID', color: { r: 0.6, g: 0.6, b: 0.6 } }];
     }

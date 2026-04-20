@@ -1,4 +1,4 @@
-import { parseColor } from '../utils/color';
+import { parsePaints } from '../utils/color';
 import { base64ToUint8Array, getImageDataFromCache } from '../utils/image';
 import { parseDimension } from '../utils/layout';
 import { applyNodeFill, applyNodePosition } from './shared.js';
@@ -49,9 +49,9 @@ export async function createImage(
   }
 
   if (element.fill && !appliedImageFill) {
-    const fill = parseColor(element.fill, variables, element.name || element.id);
-    if (fill) {
-      frame.fills = [fill];
+    const fills = parsePaints(element.fill, variables, element.name || element.id);
+    if (fills.length > 0) {
+      frame.fills = fills;
     }
   }
 

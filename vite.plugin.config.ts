@@ -5,7 +5,7 @@ const rootDir = resolve('.');
 
 export default defineConfig({
   build: {
-    emptyOutDir: true,
+    emptyOutDir: false,
     outDir: 'dist',
     lib: {
       entry: resolve(rootDir, 'src/plugin/index.ts'),

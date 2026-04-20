@@ -5,7 +5,8 @@ import {
   convertToFigmaGradient,
   extractGradientFallbackColor,
   formatColorForLogging,
-  parseColor
+  parseColor,
+  parsePaints
 } from '../src/plugin/utils/color.ts';
 
 test('extractGradientFallbackColor supports multiple stop property names', () => {
@@ -70,7 +71,7 @@ test('convertToFigmaGradient converts gradient fills to Figma gradient paint', (
     {
       type: 'gradient',
       gradientType: 'linear',
-      rotation: 90,
+      rotation: -90,
       stops: [
         { position: 0, color: '#ff0000' },
         { position: 1, color: '#0000ff' }
@@ -84,6 +85,12 @@ test('convertToFigmaGradient converts gradient fills to Figma gradient paint', (
   assert.equal(result.gradientStops.length, 2);
   assert.equal(result.gradientStops[0]?.position, 0);
   assert.equal(result.gradientStops[1]?.position, 1);
+  assert.ok(Math.abs(result.gradientTransform[0]?.[0] - 1) < 1e-10);
+  assert.ok(Math.abs(result.gradientTransform[0]?.[1]) < 1e-10);
+  assert.ok(Math.abs(result.gradientTransform[0]?.[2]) < 1e-10);
+  assert.ok(Math.abs(result.gradientTransform[1]?.[0]) < 1e-10);
+  assert.ok(Math.abs(result.gradientTransform[1]?.[1] - 1) < 1e-10);
+  assert.ok(Math.abs(result.gradientTransform[1]?.[2]) < 1e-10);
 });
 
 test('parseColor returns gradient paint for enabled gradients', () => {
@@ -101,6 +108,27 @@ test('parseColor returns gradient paint for enabled gradients', () => {
 
   assert.ok(result);
   assert.equal(result.type, 'GRADIENT_RADIAL');
+});
+
+test('parsePaints preserves multiple fills in order', () => {
+  const result = parsePaints(
+    [
+      {
+        type: 'gradient',
+        gradientType: 'linear',
+        stops: [
+          { position: 0, color: '#ff0000' },
+          { position: 1, color: '#0000ff' }
+        ]
+      },
+      '#00ff00'
+    ],
+    {}
+  );
+
+  assert.equal(result.length, 2);
+  assert.equal(result[0]?.type, 'GRADIENT_LINEAR');
+  assert.equal(result[1]?.type, 'SOLID');
 });
 
 test('parseColor includes context in invalid object warnings', () => {
