@@ -1,5 +1,6 @@
 import type { PenFill } from '../../shared/pen';
 import type { ExportAsset, ExportContext } from '../export/types.js';
+import { tokenizeSvgPath } from './svg';
 
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -119,6 +120,8 @@ export function base64ToUint8Array(base64: string): Uint8Array {
 
 export function detectImageMimeType(bytes: Uint8Array | null | undefined): string {
   if (!bytes || bytes.length < 12) return 'image/png';
+  const svgText = tryDecodeSvgText(bytes);
+  if (svgText) return 'image/svg+xml';
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
   if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif';
@@ -138,10 +141,225 @@ export function detectImageMimeType(bytes: Uint8Array | null | undefined): strin
 }
 
 export function mimeTypeToExtension(mimeType: string): string {
+  if (mimeType === 'image/svg+xml') return 'svg';
   if (mimeType === 'image/jpeg') return 'jpg';
   if (mimeType === 'image/gif') return 'gif';
   if (mimeType === 'image/webp') return 'webp';
   return 'png';
+}
+
+function tryDecodeSvgText(bytes: Uint8Array | null | undefined): string | null {
+  if (!bytes || bytes.length === 0) return null;
+
+  try {
+    const text = new TextDecoder('utf-8').decode(bytes).trim();
+    return /<svg[\s>]/i.test(text) ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function inferCornerRadiusFromSvgText(svgText: string): ExportAsset['inferredCornerRadius'] {
+  const rectRadius = inferRectCornerRadiusFromSvgText(svgText);
+  if (rectRadius !== undefined) {
+    return rectRadius;
+  }
+
+  const pathMatch = svgText.match(/<path\b[^>]*\bd="([^"]+)"/i);
+  if (!pathMatch?.[1]) {
+    return undefined;
+  }
+
+  return inferCornerRadiusFromSvgPath(pathMatch[1]);
+}
+
+function inferRectCornerRadiusFromSvgText(svgText: string): ExportAsset['inferredCornerRadius'] {
+  const rectMatch = svgText.match(/<rect\b([^>]*)>/i);
+  if (!rectMatch?.[1]) {
+    return undefined;
+  }
+
+  const attrs = rectMatch[1];
+  const rx = parseSvgNumberAttribute(attrs, 'rx');
+  const ry = parseSvgNumberAttribute(attrs, 'ry');
+  const radius = rx ?? ry;
+
+  if (radius === undefined || radius <= 0) {
+    return undefined;
+  }
+
+  return radius;
+}
+
+function parseSvgNumberAttribute(attrs: string, name: string): number | undefined {
+  const match = attrs.match(new RegExp(`\\b${name}="([^"]+)"`, 'i'));
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const value = Number.parseFloat(match[1]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function inferCornerRadiusFromSvgPath(pathData: string): ExportAsset['inferredCornerRadius'] {
+  const tokens = tokenizeSvgPath(pathData);
+  if (!tokens.length) {
+    return undefined;
+  }
+
+  const segments: Array<
+    | { type: 'line'; start: { x: number; y: number }; end: { x: number; y: number } }
+    | { type: 'arc'; start: { x: number; y: number }; end: { x: number; y: number }; radius: number }
+  > = [];
+  let currentX = 0;
+  let currentY = 0;
+  let startX = 0;
+  let startY = 0;
+
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (typeof token !== 'string') {
+      continue;
+    }
+
+    const command = token.toUpperCase();
+    const isRelative = token !== command;
+
+    if (command === 'M') {
+      const x = Number(tokens[++index]);
+      const y = Number(tokens[++index]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        break;
+      }
+      currentX = isRelative ? currentX + x : x;
+      currentY = isRelative ? currentY + y : y;
+      startX = currentX;
+      startY = currentY;
+      continue;
+    }
+
+    if (command === 'L') {
+      const x = Number(tokens[++index]);
+      const y = Number(tokens[++index]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        break;
+      }
+      const endX = isRelative ? currentX + x : x;
+      const endY = isRelative ? currentY + y : y;
+      segments.push({ type: 'line', start: { x: currentX, y: currentY }, end: { x: endX, y: endY } });
+      currentX = endX;
+      currentY = endY;
+      continue;
+    }
+
+    if (command === 'H') {
+      const x = Number(tokens[++index]);
+      if (!Number.isFinite(x)) {
+        break;
+      }
+      const endX = isRelative ? currentX + x : x;
+      segments.push({ type: 'line', start: { x: currentX, y: currentY }, end: { x: endX, y: currentY } });
+      currentX = endX;
+      continue;
+    }
+
+    if (command === 'V') {
+      const y = Number(tokens[++index]);
+      if (!Number.isFinite(y)) {
+        break;
+      }
+      const endY = isRelative ? currentY + y : y;
+      segments.push({ type: 'line', start: { x: currentX, y: currentY }, end: { x: currentX, y: endY } });
+      currentY = endY;
+      continue;
+    }
+
+    if (command === 'A') {
+      const rx = Number(tokens[++index]);
+      const ry = Number(tokens[++index]);
+      index += 3;
+      const x = Number(tokens[++index]);
+      const y = Number(tokens[++index]);
+      if (!Number.isFinite(rx) || !Number.isFinite(ry) || !Number.isFinite(x) || !Number.isFinite(y)) {
+        break;
+      }
+      const endX = isRelative ? currentX + x : x;
+      const endY = isRelative ? currentY + y : y;
+      segments.push({
+        type: 'arc',
+        start: { x: currentX, y: currentY },
+        end: { x: endX, y: endY },
+        radius: (Math.abs(rx) + Math.abs(ry)) / 2
+      });
+      currentX = endX;
+      currentY = endY;
+      continue;
+    }
+
+    if (command === 'Z') {
+      segments.push({ type: 'line', start: { x: currentX, y: currentY }, end: { x: startX, y: startY } });
+      currentX = startX;
+      currentY = startY;
+    }
+  }
+
+  const points = segments.flatMap((segment) => [segment.start, segment.end]);
+  if (!points.length) {
+    return undefined;
+  }
+
+  const minX = Math.min(...points.map((point) => point.x));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const maxY = Math.max(...points.map((point) => point.y));
+  const epsilon = Math.max(0.5, Math.min(maxX - minX, maxY - minY) * 0.05);
+  const corners: Array<number | undefined> = [undefined, undefined, undefined, undefined];
+
+  for (const segment of segments) {
+    if (segment.type !== 'arc' || segment.radius <= 0) {
+      continue;
+    }
+
+    const startEdges = new Set(getPointEdges(segment.start, minX, maxX, minY, maxY, epsilon));
+    const endEdges = new Set(getPointEdges(segment.end, minX, maxX, minY, maxY, epsilon));
+    const allEdges = new Set([...startEdges, ...endEdges]);
+
+    if (allEdges.has('top') && allEdges.has('left')) corners[0] = segment.radius;
+    if (allEdges.has('top') && allEdges.has('right')) corners[1] = segment.radius;
+    if (allEdges.has('bottom') && allEdges.has('right')) corners[2] = segment.radius;
+    if (allEdges.has('bottom') && allEdges.has('left')) corners[3] = segment.radius;
+  }
+
+  if (corners.every((corner) => corner === undefined)) {
+    return undefined;
+  }
+
+  const normalized = corners.map((corner) => roundSvgRadius(corner ?? 0)) as [number, number, number, number];
+  if (normalized.every((corner) => corner === normalized[0])) {
+    return normalized[0];
+  }
+
+  return normalized;
+}
+
+function getPointEdges(
+  point: { x: number; y: number },
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number,
+  epsilon: number
+): string[] {
+  const edges: string[] = [];
+  if (Math.abs(point.x - minX) <= epsilon) edges.push('left');
+  if (Math.abs(point.x - maxX) <= epsilon) edges.push('right');
+  if (Math.abs(point.y - minY) <= epsilon) edges.push('top');
+  if (Math.abs(point.y - maxY) <= epsilon) edges.push('bottom');
+  return edges;
+}
+
+function roundSvgRadius(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 export function sanitizeFileNamePart(value: unknown, fallback = 'image'): string {
@@ -207,11 +425,20 @@ export async function getExportImageAsset(
       const mimeType = detectImageMimeType(bytes);
       const extension = mimeTypeToExtension(mimeType);
       const fileName = `${sanitizeFileNamePart(node.name || node.type || 'image')}-${fill.imageHash.slice(0, 8)}.${extension}`;
-      const asset = {
+      const asset: ExportAsset = {
         fileName,
         mimeType,
         dataUrl: `data:${mimeType};base64,${uint8ArrayToBase64(bytes)}`
       };
+
+      if (mimeType === 'image/svg+xml') {
+        const svgText = tryDecodeSvgText(bytes);
+        const inferredCornerRadius = svgText ? inferCornerRadiusFromSvgText(svgText) : undefined;
+        if (inferredCornerRadius !== undefined) {
+          asset.inferredCornerRadius = inferredCornerRadius;
+          exportContext.inferredCornerRadiusByNodeId.set(node.id, inferredCornerRadius);
+        }
+      }
 
       exportContext.assets.set(imageAssetKey, asset);
       return asset;

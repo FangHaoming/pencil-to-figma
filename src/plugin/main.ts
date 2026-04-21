@@ -95,7 +95,10 @@ async function exportPageToPen(): Promise<void> {
 
 async function convertNodesToPenBundle(nodes: readonly SceneNode[]): Promise<ExportBundle> {
   console.log('[EXPORT] convertNodesToPenBundle start', { count: nodes.length });
-  const exportContext: ExportContext = { assets: new Map() };
+  const exportContext: ExportContext = {
+    assets: new Map(),
+    inferredCornerRadiusByNodeId: new Map()
+  };
   const penData: PenDocument = {
     version: '2.7',
     variables: {},

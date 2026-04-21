@@ -57,11 +57,14 @@ test('detectImageMimeType and mimeTypeToExtension map common formats', () => {
   const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 0, 0, 0, 0]);
   const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+  const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
 
   assert.equal(detectImageMimeType(png), 'image/png');
   assert.equal(detectImageMimeType(jpg), 'image/jpeg');
   assert.equal(detectImageMimeType(webp), 'image/webp');
+  assert.equal(detectImageMimeType(svg), 'image/svg+xml');
   assert.equal(mimeTypeToExtension('image/jpeg'), 'jpg');
+  assert.equal(mimeTypeToExtension('image/svg+xml'), 'svg');
   assert.equal(mimeTypeToExtension('image/webp'), 'webp');
   assert.equal(mimeTypeToExtension('image/unknown'), 'png');
 });
@@ -96,7 +99,8 @@ test('exportNodeToPngAsset caches exported assets', async () => {
   };
 
   const exportContext: ExportContext = {
-    assets: new Map()
+    assets: new Map(),
+    inferredCornerRadiusByNodeId: new Map()
   };
 
   const first = await exportNodeToPngAsset(node as unknown as SceneNode & ExportMixin, exportContext);

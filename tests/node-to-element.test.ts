@@ -5,6 +5,7 @@ import { nodeToElementImpl } from '../src/plugin/export/node-to-element.ts';
 import type { ExportContext } from '../src/plugin/export/types.ts';
 
 const mixed = Symbol('figma.mixed');
+const mockImages = new Map<string, Uint8Array>();
 
 type MockBaseNode = {
   id: string;
@@ -26,6 +27,16 @@ if (!('figma' in globalThis)) {
     value: {
       mixed,
       loadFontAsync: async () => {},
+      getImageByHash: (hash: string) => {
+        const bytes = mockImages.get(hash);
+        if (!bytes) {
+          return null;
+        }
+
+        return {
+          getBytesAsync: async () => bytes
+        };
+      },
       createText: () => {
         let characters = '';
         let fontSize = 16;
@@ -60,6 +71,13 @@ if (!('figma' in globalThis)) {
 
 function createPluginDataStore(data: Record<string, string> = {}): (key: string) => string {
   return (key: string) => data[key] || '';
+}
+
+function createExportContext(): ExportContext {
+  return {
+    assets: new Map(),
+    inferredCornerRadiusByNodeId: new Map()
+  };
 }
 
 function createFrameNode(overrides: Partial<MockSceneNode> = {}): MockSceneNode {
@@ -192,9 +210,7 @@ test('nodeToElementImpl maps frame auto-layout properties and children', async (
     children: [textNode]
   });
 
-  const exportContext: ExportContext = {
-    assets: new Map()
-  };
+  const exportContext = createExportContext();
 
   const result = await nodeToElementImpl(frameNode as unknown as SceneNode & PluginDataMixin, exportContext);
 
@@ -217,7 +233,7 @@ test('nodeToElementImpl converts text-specific properties', async () => {
     fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 0, b: 0 } }]
   });
 
-  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, { assets: new Map() });
+  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, createExportContext());
 
   assert.ok(result);
   assert.equal(result.type, 'text');
@@ -261,7 +277,7 @@ test('nodeToElementImpl exports mixed text styles as segments', async () => {
     ]
   });
 
-  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, { assets: new Map() });
+  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, createExportContext());
 
   assert.ok(result);
   assert.equal(result.type, 'group');
@@ -332,7 +348,7 @@ test('nodeToElementImpl explodes mixed-color text into aligned child texts', asy
     ]
   });
 
-  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, { assets: new Map() });
+  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, createExportContext());
 
   assert.ok(result);
   assert.equal(result.type, 'group');
@@ -364,7 +380,7 @@ test('nodeToElementImpl exports vector geometry and relative group child positio
 
   const result = await nodeToElementImpl(
     vectorNode as unknown as SceneNode & PluginDataMixin,
-    { assets: new Map() },
+    createExportContext(),
     parentGroup as unknown as BaseNode
   );
 
@@ -404,7 +420,7 @@ test('nodeToElementImpl preserves multiple visible fills and strokes', async () 
     strokeAlign: 'CENTER'
   });
 
-  const result = await nodeToElementImpl(vectorNode as unknown as SceneNode & PluginDataMixin, { assets: new Map() });
+  const result = await nodeToElementImpl(vectorNode as unknown as SceneNode & PluginDataMixin, createExportContext());
 
   assert.ok(result);
   assert.deepEqual(result.fill, [
@@ -555,7 +571,7 @@ test('nodeToElementImpl hoists background styles and stroke preview to outer con
     children: [contentWrapper]
   });
 
-  const result = await nodeToElementImpl(frameNode as unknown as SceneNode & PluginDataMixin, { assets: new Map() });
+  const result = await nodeToElementImpl(frameNode as unknown as SceneNode & PluginDataMixin, createExportContext());
 
   assert.ok(result);
   assert.deepEqual(result.fill, [
@@ -666,7 +682,7 @@ test('nodeToElementImpl hoists rect-like path styles through clip wrapper', asyn
     children: [clipFrame]
   });
 
-  const result = await nodeToElementImpl(groupNode as unknown as SceneNode & PluginDataMixin, { assets: new Map() });
+  const result = await nodeToElementImpl(groupNode as unknown as SceneNode & PluginDataMixin, createExportContext());
 
   assert.ok(result);
   assert.equal(result.type, 'frame');
@@ -677,4 +693,124 @@ test('nodeToElementImpl hoists rect-like path styles through clip wrapper', asyn
   });
   assert.ok(result.fill);
   assert.equal(result.children?.some((child) => child.name === 'Rectangle 24'), false);
+});
+
+test('nodeToElementImpl preserves inferred corner radius from svg image backgrounds', async () => {
+  mockImages.set(
+    'svg-pill',
+    new TextEncoder().encode(
+      '<svg viewBox="0 0 68 22" xmlns="http://www.w3.org/2000/svg">' +
+      '<path d="M 0 0 H 64 A 4 4 0 0 1 68 4 V 22 H 4 A 4 4 0 0 1 0 18 V 0 Z" fill="#4CE2F3"/>' +
+      '</svg>'
+    )
+  );
+
+  const backgroundNode = createRectangleNode({
+    id: 'svg-bg',
+    name: 'Rectangle 419',
+    width: 68,
+    height: 22,
+    fills: [{ type: 'IMAGE', visible: true, imageHash: 'svg-pill', scaleMode: 'FILL' }],
+    exportAsync: async () => new Uint8Array()
+  });
+  const textNode = createTextNode({
+    id: 'svg-text',
+    name: '加赠 20%',
+    x: 6,
+    y: 2,
+    width: 55,
+    height: 17,
+    characters: '加赠 20%',
+    fontSize: 12,
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0, g: 0, b: 0 } }]
+  });
+  const groupNode = createGroupNode({
+    id: 'svg-badge',
+    name: 'Group 734',
+    width: 68,
+    height: 22,
+    children: [backgroundNode, textNode]
+  });
+
+  const result = await nodeToElementImpl(groupNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.deepEqual(result.cornerRadius, [0, 4, 0, 4]);
+  assert.equal(result.children?.some((child) => child.name === 'Rectangle 419'), false);
+});
+
+test('nodeToElementImpl applies bonus badge fallback radius for solid fill badges', async () => {
+  const textNode = createTextNode({
+    id: 'bonus-text',
+    name: '加赠 20%',
+    x: 6,
+    y: 2,
+    width: 55,
+    height: 17,
+    characters: '加赠 20%',
+    fontSize: 12,
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0, g: 0, b: 0 } }]
+  });
+  const badgeNode = createFrameNode({
+    id: 'bonus-badge',
+    name: 'Group 734',
+    x: 108,
+    y: 0,
+    width: 68,
+    height: 22,
+    layoutMode: 'NONE',
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0.298, g: 0.886, b: 0.953 } }],
+    strokes: [],
+    strokeWeight: 0,
+    cornerRadius: 0,
+    topLeftRadius: 0,
+    topRightRadius: 0,
+    bottomRightRadius: 0,
+    bottomLeftRadius: 0,
+    children: [textNode]
+  });
+
+  const result = await nodeToElementImpl(badgeNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.deepEqual(result.cornerRadius, [0, 4, 0, 4]);
+});
+
+test('nodeToElementImpl applies bonus badge fallback radius for path badge groups', async () => {
+  const pathNode = createVectorNode({
+    id: 'badge-path',
+    name: 'Vector',
+    x: 0,
+    y: 0,
+    width: 68,
+    height: 22,
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0.298, g: 0.886, b: 0.953 } }],
+    vectorPaths: [{ data: 'M 0 0 L 68 0 L 68 22 L 0 22 Z' }]
+  });
+  const textNode = createTextNode({
+    id: 'badge-text',
+    name: '加赠 20%',
+    x: 6,
+    y: 2,
+    width: 55,
+    height: 17,
+    characters: '加赠 20%',
+    fontSize: 12,
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0, g: 0, b: 0 } }]
+  });
+  const badgeGroup = createGroupNode({
+    id: 'badge-group',
+    name: 'Group 734',
+    width: 68,
+    height: 22,
+    children: [pathNode, textNode]
+  });
+
+  const result = await nodeToElementImpl(badgeGroup as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.deepEqual(result.cornerRadius, [0, 4, 0, 4]);
 });
