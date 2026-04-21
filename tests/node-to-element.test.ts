@@ -253,20 +253,6 @@ test('nodeToElementImpl converts text-specific properties', async () => {
   assert.equal(result.textGrowth, 'auto');
 });
 
-test('nodeToElementImpl maps auto line height to 100 percent', async () => {
-  const textNode = createTextNode({
-    fontSize: 18,
-    lineHeight: { unit: 'AUTO' },
-    fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1 } }]
-  });
-
-  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, createExportContext());
-
-  assert.ok(result);
-  assert.equal(result.type, 'text');
-  assert.equal(result.lineHeight, 1);
-});
-
 test('nodeToElementImpl exports mixed text styles as segments', async () => {
   const textNode = createTextNode({
     characters: '￥40',

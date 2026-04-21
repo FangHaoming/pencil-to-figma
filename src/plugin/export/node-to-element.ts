@@ -58,10 +58,6 @@ function mapFigmaLineHeightToPenValue(
 
   const unit = String(lineHeight.unit);
 
-  if (unit === 'AUTO') {
-    return 1;
-  }
-
   if (!('value' in lineHeight)) {
     return undefined;
   }
