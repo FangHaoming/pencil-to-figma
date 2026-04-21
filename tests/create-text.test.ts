@@ -12,6 +12,7 @@ type MockTextNode = {
   fontName: MockFontName;
   fontSize?: number;
   lineHeight?: LineHeight;
+  letterSpacing?: LetterSpacing;
   fills?: Paint[];
   textAutoResize?: string;
   textAlignHorizontal?: string;
@@ -21,11 +22,13 @@ type MockTextNode = {
   rangeFontSizes: Array<{ start: number; end: number; value: number }>;
   rangeFills: Array<{ start: number; end: number; value: Paint[] }>;
   rangeLineHeights: Array<{ start: number; end: number; value: LineHeight }>;
+  rangeLetterSpacings: Array<{ start: number; end: number; value: LetterSpacing }>;
   resize(width: number, height: number): void;
   setRangeFontName(start: number, end: number, value: MockFontName): void;
   setRangeFontSize(start: number, end: number, value: number): void;
   setRangeFills(start: number, end: number, value: Paint[]): void;
   setRangeLineHeight(start: number, end: number, value: LineHeight): void;
+  setRangeLetterSpacing(start: number, end: number, value: LetterSpacing): void;
 };
 
 const loadedFonts: MockFontName[] = [];
@@ -41,6 +44,7 @@ function createMockTextNode(): MockTextNode {
     rangeFontSizes: [],
     rangeFills: [],
     rangeLineHeights: [],
+    rangeLetterSpacings: [],
     resize(width: number, height: number) {
       this.width = width;
       this.height = height;
@@ -57,6 +61,9 @@ function createMockTextNode(): MockTextNode {
     },
     setRangeLineHeight(start: number, end: number, value: LineHeight) {
       this.rangeLineHeights.push({ start, end, value });
+    },
+    setRangeLetterSpacing(start: number, end: number, value: LetterSpacing) {
+      this.rangeLetterSpacings.push({ start, end, value });
     }
   };
 }
@@ -89,6 +96,7 @@ test('createText restores styled segments and fixed-width sizing', async () => {
           fontWeight: '400',
           fontSize: 14,
           lineHeight: 26 / 14,
+          letterSpacing: 0.7,
           fill: '#ffffff'
         },
         {
@@ -97,6 +105,7 @@ test('createText restores styled segments and fixed-width sizing', async () => {
           fontWeight: '400',
           fontSize: 14,
           lineHeight: 26 / 14,
+          letterSpacing: 0.7,
           fill: '#14cb75'
         },
         {
@@ -105,6 +114,7 @@ test('createText restores styled segments and fixed-width sizing', async () => {
           fontWeight: '400',
           fontSize: 14,
           lineHeight: 26 / 14,
+          letterSpacing: 0.7,
           fill: '#ffffff'
         }
       ]
@@ -123,6 +133,7 @@ test('createText restores styled segments and fixed-width sizing', async () => {
   assert.deepEqual(text.resizeCalls.at(-1), { width: 177, height: 24 });
   assert.equal(text.rangeFontSizes.length, 3);
   assert.equal(text.rangeFills.length, 3);
+  assert.deepEqual(text.rangeLetterSpacings[0]?.value, { unit: 'PIXELS', value: 0.7 });
   assert.deepEqual(text.rangeFills[1]?.value, [
     {
       type: 'SOLID',

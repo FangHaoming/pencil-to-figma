@@ -48,6 +48,62 @@ type StyledExportTextSegment = PenTextSegment & {
   lineHeightPx?: number;
 };
 
+function mapFigmaLineHeightToPenValue(
+  lineHeight: LineHeight | PluginAPI['mixed'] | undefined,
+  fontSize: number | PluginAPI['mixed'] | undefined
+): number | undefined {
+  if (!lineHeight || lineHeight === figma.mixed) {
+    return undefined;
+  }
+
+  const unit = String(lineHeight.unit);
+
+  if (unit === 'AUTO') {
+    return 1;
+  }
+
+  if (!('value' in lineHeight)) {
+    return undefined;
+  }
+
+  if (unit === 'PERCENT' || unit === 'PERCENT_FONT_SIZE') {
+    return lineHeight.value / 100;
+  }
+
+  if (unit === 'PIXELS' && typeof fontSize === 'number' && fontSize > 0) {
+    return lineHeight.value / fontSize;
+  }
+
+  return undefined;
+}
+
+function mapFigmaLetterSpacingToPenValue(
+  letterSpacing:
+    | {
+        value: number;
+        unit: string;
+      }
+    | PluginAPI['mixed']
+    | undefined,
+  fontSize: number | PluginAPI['mixed'] | undefined
+): number | undefined {
+  if (!letterSpacing || letterSpacing === figma.mixed) {
+    return undefined;
+  }
+
+  const unit = String(letterSpacing.unit);
+
+  if (unit === 'PIXELS') {
+    return letterSpacing.value;
+  }
+
+  if ((unit === 'PERCENT' || unit === 'PERCENT_FONT_SIZE') && typeof fontSize === 'number') {
+    return (fontSize * letterSpacing.value) / 100;
+  }
+
+  return undefined;
+}
+
 export async function nodeToElementImpl(
   node: ExportableNode,
   exportContext: ExportContext | null = null,
@@ -274,15 +330,28 @@ export async function nodeToElementImpl(
     }
 
     if (textNode.lineHeight && textNode.lineHeight !== figma.mixed) {
-      if (textNode.lineHeight.unit === 'PERCENT') {
-        element.lineHeight = textNode.lineHeight.value / 100;
-      } else if (textNode.lineHeight.unit === 'PIXELS' && typeof textNode.fontSize === 'number' && textNode.fontSize > 0) {
-        element.lineHeight = textNode.lineHeight.value / textNode.fontSize;
+      const lineHeight = mapFigmaLineHeightToPenValue(textNode.lineHeight, textNode.fontSize);
+      if (typeof lineHeight === 'number') {
+        element.lineHeight = lineHeight;
       }
     } else {
       const uniformLineHeight = getUniformSegmentValue(exportedTextSegments, 'lineHeight');
       if (typeof uniformLineHeight === 'number') {
         element.lineHeight = uniformLineHeight;
+      }
+    }
+
+    const letterSpacing = mapFigmaLetterSpacingToPenValue(
+      (textNode as ExportableTextNode & { letterSpacing?: { value: number; unit: string } | PluginAPI['mixed'] })
+        .letterSpacing,
+      textNode.fontSize
+    );
+    if (typeof letterSpacing === 'number') {
+      element.letterSpacing = letterSpacing;
+    } else {
+      const uniformLetterSpacing = getUniformSegmentValue(exportedTextSegments, 'letterSpacing');
+      if (typeof uniformLetterSpacing === 'number') {
+        element.letterSpacing = uniformLetterSpacing;
       }
     }
 
@@ -507,6 +576,7 @@ async function getStyledTextSegmentsForExport(
         fontName?: FontName | PluginAPI['mixed'];
         fills?: ReadonlyArray<Paint> | PluginAPI['mixed'];
         lineHeight?: LineHeight | PluginAPI['mixed'];
+        letterSpacing?: { value: number; unit: string } | PluginAPI['mixed'];
       }>;
     }
   ).getStyledTextSegments;
@@ -521,7 +591,7 @@ async function getStyledTextSegmentsForExport(
     textNode.fills === figma.mixed ||
     textNode.lineHeight === figma.mixed;
 
-  const rawSegments = getStyledTextSegments.call(textNode, ['fontSize', 'fontName', 'fills', 'lineHeight']);
+  const rawSegments = getStyledTextSegments.call(textNode, ['fontSize', 'fontName', 'fills', 'lineHeight', 'letterSpacing']);
   if (!Array.isArray(rawSegments) || rawSegments.length === 0) {
     return undefined;
   }
@@ -561,15 +631,21 @@ async function getStyledTextSegmentsForExport(
     }
 
     if (rawSegment.lineHeight && rawSegment.lineHeight !== figma.mixed) {
-      if (rawSegment.lineHeight.unit === 'PERCENT') {
-        segment.lineHeight = rawSegment.lineHeight.value / 100;
-        if (typeof rawSegment.fontSize === 'number') {
+      const lineHeight = mapFigmaLineHeightToPenValue(rawSegment.lineHeight, rawSegment.fontSize);
+      const lineHeightUnit = String(rawSegment.lineHeight.unit);
+      if (typeof lineHeight === 'number') {
+        segment.lineHeight = lineHeight;
+        if ((lineHeightUnit === 'PERCENT' || lineHeightUnit === 'PERCENT_FONT_SIZE') && typeof rawSegment.fontSize === 'number') {
           segment.lineHeightPx = rawSegment.fontSize * segment.lineHeight;
+        } else if (lineHeightUnit === 'PIXELS' && 'value' in rawSegment.lineHeight) {
+          segment.lineHeightPx = rawSegment.lineHeight.value;
         }
-      } else if (rawSegment.lineHeight.unit === 'PIXELS' && typeof rawSegment.fontSize === 'number' && rawSegment.fontSize > 0) {
-        segment.lineHeight = rawSegment.lineHeight.value / rawSegment.fontSize;
-        segment.lineHeightPx = rawSegment.lineHeight.value;
       }
+    }
+
+    const letterSpacing = mapFigmaLetterSpacingToPenValue(rawSegment.letterSpacing, rawSegment.fontSize);
+    if (typeof letterSpacing === 'number') {
+      segment.letterSpacing = letterSpacing;
     }
 
     if (Array.isArray(rawSegment.fills) && rawSegment.fills.length > 0) {
@@ -598,7 +674,7 @@ function shouldExplodeMixedText(segments: StyledExportTextSegment[] | undefined)
     return false;
   }
 
-  const trackedKeys: Array<keyof PenTextSegment> = ['fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'fill'];
+  const trackedKeys: Array<keyof PenTextSegment> = ['fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'fill', 'letterSpacing'];
   return trackedKeys.some((key) => getUniformSegmentValue(segments, key) === undefined);
 }
 

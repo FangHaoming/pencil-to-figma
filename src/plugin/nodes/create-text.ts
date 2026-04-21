@@ -32,6 +32,10 @@ export async function createText(
     text.lineHeight = { unit: 'PERCENT', value: defaultStyle.lineHeight * 100 };
   }
 
+  if (typeof defaultStyle.letterSpacing === 'number') {
+    text.letterSpacing = { unit: 'PIXELS', value: defaultStyle.letterSpacing };
+  }
+
   if (element.textAlign) {
     text.textAlignHorizontal = mapTextAlign(element.textAlign);
   }
@@ -58,12 +62,13 @@ export async function createText(
   return text;
 }
 
-type TextStyleInput = Pick<NodeElement, 'fontFamily' | 'fontWeight' | 'fontStyle' | 'fontSize' | 'lineHeight' | 'fill'>;
+type TextStyleInput = Pick<NodeElement, 'fontFamily' | 'fontWeight' | 'fontStyle' | 'fontSize' | 'lineHeight' | 'letterSpacing' | 'fill'>;
 type RangeTextNode = TextNode & {
   setRangeFontName?: (start: number, end: number, value: FontName) => void;
   setRangeFontSize?: (start: number, end: number, value: number) => void;
   setRangeFills?: (start: number, end: number, value: Paint[]) => void;
   setRangeLineHeight?: (start: number, end: number, value: LineHeight) => void;
+  setRangeLetterSpacing?: (start: number, end: number, value: LetterSpacing) => void;
 };
 
 function normalizeTextSegments(element: NodeElement): PenTextSegment[] {
@@ -92,6 +97,7 @@ function getDefaultTextStyle(element: NodeElement, segments: PenTextSegment[]): 
     fontStyle: element.fontStyle ?? firstSegment?.fontStyle,
     fontSize: element.fontSize ?? firstSegment?.fontSize,
     lineHeight: element.lineHeight ?? firstSegment?.lineHeight,
+    letterSpacing: element.letterSpacing ?? firstSegment?.letterSpacing,
     fill: element.fill ?? firstSegment?.fill
   };
 }
@@ -157,6 +163,13 @@ async function applyTextSegments(
       text.setRangeLineHeight(start, end, {
         unit: 'PERCENT',
         value: segment.lineHeight * 100
+      });
+    }
+
+    if (typeof segment.letterSpacing === 'number' && text.setRangeLetterSpacing) {
+      text.setRangeLetterSpacing(start, end, {
+        unit: 'PIXELS',
+        value: segment.letterSpacing
       });
     }
 

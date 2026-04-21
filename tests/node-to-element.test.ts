@@ -124,6 +124,7 @@ function createTextNode(overrides: Partial<MockSceneNode> = {}): MockSceneNode {
     textAlignHorizontal: 'CENTER',
     textAlignVertical: 'BOTTOM',
     lineHeight: { unit: 'PERCENT', value: 150 },
+    letterSpacing: { unit: 'PIXELS', value: 0 },
     textAutoResize: 'WIDTH_AND_HEIGHT',
     fills: [],
     strokes: [],
@@ -230,6 +231,9 @@ test('nodeToElementImpl maps frame auto-layout properties and children', async (
 
 test('nodeToElementImpl converts text-specific properties', async () => {
   const textNode = createTextNode({
+    fontSize: 18,
+    lineHeight: { unit: 'PERCENT_FONT_SIZE', value: 125.3 },
+    letterSpacing: { unit: 'PERCENT', value: 5 },
     fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 0, b: 0 } }]
   });
 
@@ -242,10 +246,25 @@ test('nodeToElementImpl converts text-specific properties', async () => {
   assert.equal(result.fontWeight, '700');
   assert.equal(result.textAlign, 'center');
   assert.equal(result.textAlignVertical, 'bottom');
-  assert.equal(result.lineHeight, 1.5);
+  assert.equal(result.lineHeight, 1.253);
+  assert.equal(result.letterSpacing, 0.9);
   assert.equal(result.fill, '#ff0000');
   assert.equal(result.opacity, 0.85);
   assert.equal(result.textGrowth, 'auto');
+});
+
+test('nodeToElementImpl maps auto line height to 100 percent', async () => {
+  const textNode = createTextNode({
+    fontSize: 18,
+    lineHeight: { unit: 'AUTO' },
+    fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1 } }]
+  });
+
+  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'text');
+  assert.equal(result.lineHeight, 1);
 });
 
 test('nodeToElementImpl exports mixed text styles as segments', async () => {

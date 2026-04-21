@@ -34,6 +34,7 @@ export type NodeElement = PenElement & {
   fontWeight?: string | number;
   fontStyle?: string;
   lineHeight?: number;
+  letterSpacing?: number;
   textAlign?: 'left' | 'center' | 'right' | 'justify';
   textAlignVertical?: 'top' | 'middle' | 'bottom';
   textGrowth?: 'auto' | 'fixed-width' | 'fixed-width-height';
