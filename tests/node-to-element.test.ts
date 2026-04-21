@@ -812,6 +812,100 @@ test('nodeToElementImpl does not hoist structural opacity to the parent containe
   assert.equal(result.children?.some((child) => child.name === 'Overlay' && child.opacity === 0.6), true);
 });
 
+test('nodeToElementImpl rasterizes groups containing rotated image fills', async () => {
+  const rotatedImageNode = createRectangleNode({
+    id: 'rotated-image',
+    name: 'image 6',
+    x: 10,
+    y: 0,
+    width: 42.95,
+    height: 28,
+    rotation: 90,
+    fills: [{ type: 'IMAGE', visible: true, imageHash: 'arrow-image', scaleMode: 'FILL' }]
+  });
+  const parentGroup = createGroupNode({
+    id: 'arrow-group',
+    name: '箭头',
+    width: 61.36,
+    height: 74,
+    children: [rotatedImageNode],
+    exportAsync: async () => new Uint8Array([1, 2, 3, 4])
+  });
+
+  const result = await nodeToElementImpl(parentGroup as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.deepEqual(result.fill, {
+    type: 'image',
+    url: './image-arrow-group.png',
+    mode: 'fill'
+  });
+  assert.equal(result.children, undefined);
+});
+
+test('nodeToElementImpl does not rasterize ancestors of rotated image groups', async () => {
+  const rotatedImageNode = createRectangleNode({
+    id: 'rotated-image-child',
+    name: 'image 6',
+    x: 10,
+    y: 0,
+    width: 42.95,
+    height: 28,
+    rotation: 90,
+    fills: [{ type: 'IMAGE', visible: true, imageHash: 'arrow-image', scaleMode: 'FILL' }]
+  });
+  const arrowGroup = createGroupNode({
+    id: 'arrow-group-child',
+    name: '箭头',
+    width: 61.36,
+    height: 74,
+    children: [rotatedImageNode],
+    exportAsync: async () => new Uint8Array([1, 2, 3, 4])
+  });
+  const labelNode = createTextNode({
+    id: 'label-text',
+    x: 80,
+    y: 12,
+    opacity: 1
+  });
+  const parentFrame = createFrameNode({
+    id: 'parent-frame',
+    name: '箭头衔接',
+    x: 0,
+    y: 0,
+    width: 160,
+    height: 80,
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    clipsContent: false,
+    children: [arrowGroup, labelNode],
+    exportAsync: async () => new Uint8Array([5, 6, 7, 8])
+  });
+
+  const result = await nodeToElementImpl(parentFrame as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.notDeepEqual(result.fill, {
+    type: 'image',
+    url: './image-parent-frame.png',
+    mode: 'fill'
+  });
+  assert.equal(result.children?.length, 2);
+  assert.deepEqual(result.children?.[0]?.fill, {
+    type: 'image',
+    url: './image-arrow-group-child.png',
+    mode: 'fill'
+  });
+});
+
 test('nodeToElementImpl applies bonus badge fallback radius for solid fill badges', async () => {
   const textNode = createTextNode({
     id: 'bonus-text',

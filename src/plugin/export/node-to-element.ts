@@ -147,7 +147,7 @@ export async function nodeToElementImpl(
     element.height = Math.round(node.height * 100) / 100;
   }
 
-  if (node.type === 'GROUP' && node.locked === true && isExportableImageNode(node)) {
+  if (shouldRasterizeNodeForImageTransform(node)) {
     const rasterAsset = await exportNodeToPngAsset(node, exportContext);
     if (rasterAsset) {
       element.type = 'frame';
@@ -491,6 +491,39 @@ function isSolidPenFill(fill: ExportedPenElement['fill']): boolean {
 
 function isExportableImageNode(node: SceneNode): node is ExportableImageNode {
   return typeof (node as Partial<ExportMixin>).exportAsync === 'function';
+}
+
+function shouldRasterizeNodeForImageTransform(node: ExportableNode): boolean {
+  if (!isExportableImageNode(node)) {
+    return false;
+  }
+
+  if (node.type === 'GROUP' && node.locked === true) {
+    return true;
+  }
+
+  return hasRotatedImageDirectChild(node);
+}
+
+function hasRotatedImageDirectChild(node: SceneNode): boolean {
+  if (!('children' in node) || !Array.isArray(node.children) || node.children.length === 0) {
+    return false;
+  }
+
+  return node.children.some((child) => isRotatedImagePaintNode(child));
+}
+
+function isRotatedImagePaintNode(node: SceneNode): boolean {
+  const candidate = node as SceneNode & {
+    rotation?: number;
+    fills?: ReadonlyArray<Paint> | PluginAPI['mixed'];
+  };
+  const rotation = typeof candidate.rotation === 'number' ? candidate.rotation : 0;
+  if (Math.abs(rotation) < 0.01) {
+    return false;
+  }
+
+  return Array.isArray(candidate.fills) && candidate.fills.some((fill) => fill?.type === 'IMAGE' && fill.visible !== false);
 }
 
 function toPenStrokeAlign(value: NonNullable<ExportableGeometryNode['strokeAlign']>): NonNullable<PenStroke['align']> {
