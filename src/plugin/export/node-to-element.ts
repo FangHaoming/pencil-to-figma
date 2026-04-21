@@ -944,6 +944,7 @@ function isStructuralWrapper(element: ExportedPenElement): boolean {
     !element.fill &&
     !element.stroke &&
     !element.effect &&
+    (element.opacity === undefined || element.opacity === 1) &&
     !element.reusable &&
     !('ref' in element)
   );
@@ -954,8 +955,7 @@ function hasHoistableStyles(element: ExportedPenElement): boolean {
     element.fill !== undefined ||
     element.stroke !== undefined ||
     element.effect !== undefined ||
-    element.cornerRadius !== undefined ||
-    (element.opacity !== undefined && element.opacity !== 1)
+    element.cornerRadius !== undefined
   );
 }
 
@@ -998,10 +998,6 @@ function hoistChildStyles(parent: ExportedPenElement, child: ExportedPenElement)
   if (shouldOverrideCornerRadius(parent.cornerRadius, child.cornerRadius)) {
     parent.cornerRadius = child.cornerRadius;
   }
-
-  if ((parent.opacity === undefined || parent.opacity === 1) && child.opacity !== undefined && child.opacity !== 1) {
-    parent.opacity = child.opacity;
-  }
 }
 
 function clearHoistedStyles(element: ExportedPenElement): void {
@@ -1009,7 +1005,6 @@ function clearHoistedStyles(element: ExportedPenElement): void {
   delete element.stroke;
   delete element.effect;
   delete element.cornerRadius;
-  delete element.opacity;
 }
 
 function normalizeGraphicContainerType(element: ExportedPenElement): void {

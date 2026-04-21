@@ -740,6 +740,59 @@ test('nodeToElementImpl preserves inferred corner radius from svg image backgrou
   assert.equal(result.children?.some((child) => child.name === 'Rectangle 419'), false);
 });
 
+test('nodeToElementImpl does not hoist structural opacity to the parent container', async () => {
+  const overlayNode = createFrameNode({
+    id: 'overlay-frame',
+    name: 'Overlay',
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 48,
+    opacity: 0.6,
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    clipsContent: false,
+    fills: [],
+    strokes: [],
+    strokeWeight: 0,
+    children: []
+  });
+  const textNode = createTextNode({
+    id: 'title-text',
+    opacity: 1
+  });
+  const parentNode = createFrameNode({
+    id: 'page-root',
+    name: 'Page Root',
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 48,
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    clipsContent: false,
+    children: [overlayNode, textNode]
+  });
+
+  const result = await nodeToElementImpl(parentNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.opacity, undefined);
+  assert.equal(result.children?.some((child) => child.name === 'Overlay' && child.opacity === 0.6), true);
+});
+
 test('nodeToElementImpl applies bonus badge fallback radius for solid fill badges', async () => {
   const textNode = createTextNode({
     id: 'bonus-text',
