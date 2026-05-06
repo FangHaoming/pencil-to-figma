@@ -14,5 +14,5 @@
     "resolveJsonModule": true,
     "types": ["@figma/plugin-typings", "node"]
   },
-  "include": ["src/**/*", "vite.plugin.config.ts", "vite.ui.config.ts"]
+  "include": ["src/**/*", "bridge/**/*", "mcp/**/*", "vite.plugin.config.ts", "vite.ui.config.ts"]
 }

@@ -830,6 +830,33 @@ test('nodeToElementImpl rasterizes groups containing rotated image fills', async
   assert.equal(result.children, undefined);
 });
 
+test('nodeToElementImpl rasterizes locked groups without exporting children', async () => {
+  const imageChild = createRectangleNode({
+    id: 'locked-image-child',
+    fills: [{ type: 'IMAGE', visible: true, imageHash: 'child-image', scaleMode: 'FILL' }]
+  });
+  const lockedGroup = createGroupNode({
+    id: 'locked-group',
+    name: 'Locked Artwork',
+    locked: true,
+    width: 120,
+    height: 48,
+    children: [imageChild],
+    exportAsync: async () => new Uint8Array([1, 2, 3, 4])
+  });
+
+  const result = await nodeToElementImpl(lockedGroup as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.deepEqual(result.fill, {
+    type: 'image',
+    url: './Locked-Artwork-locked-group.png',
+    mode: 'fill'
+  });
+  assert.equal(result.children, undefined);
+});
+
 test('nodeToElementImpl does not rasterize ancestors of rotated image groups', async () => {
   const rotatedImageNode = createRectangleNode({
     id: 'rotated-image-child',

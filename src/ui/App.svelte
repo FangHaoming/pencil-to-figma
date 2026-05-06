@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
+  import { createBridgeClient, type BridgeClient } from './bridge-client';
+  import type { BridgeCommand } from '../shared/bridge';
   import type { PluginMessageEnvelope, PluginToUiMessage, UiToPluginMessage } from '../shared/messages';
   import type { PenAnalysis, PenAsset, PenDocument } from '../shared/pen';
 
@@ -36,6 +39,10 @@
 
   let fileInput: HTMLInputElement | null = null;
   let imagesInput: HTMLInputElement | null = null;
+  let bridgeClient: BridgeClient | null = null;
+
+  const bridgeUrl = 'ws://localhost:3210';
+  const pluginSessionId = `plugin-${Math.random().toString(36).slice(2, 10)}`;
 
   const statusTimeouts = new Map<StatusKey, number>();
 
@@ -48,6 +55,56 @@
   function postPluginMessage(message: UiToPluginMessage): void {
     parent.postMessage({ pluginMessage: message }, '*');
   }
+
+  function createRequestId(prefix = 'request'): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  function requestRuntimeInfo(): void {
+    const command: BridgeCommand = {
+      kind: 'bridge.getRuntimeInfo',
+      requestId: createRequestId('runtime'),
+      timestamp: Date.now()
+    };
+
+    postPluginMessage({
+      type: 'bridge-command',
+      command
+    });
+  }
+
+  function connectBridge(): void {
+    if (bridgeClient) {
+      return;
+    }
+
+    bridgeClient = createBridgeClient({
+      url: bridgeUrl,
+      onOpen: () => {
+        requestRuntimeInfo();
+      },
+      onCommand: (command) => {
+        postPluginMessage({
+          type: 'bridge-command',
+          command
+        });
+      },
+      onError: (error) => {
+        console.warn('[BRIDGE]', error.message);
+      }
+    });
+
+    bridgeClient.connect();
+  }
+
+  onMount(() => {
+    connectBridge();
+  });
+
+  onDestroy(() => {
+    bridgeClient?.disconnect();
+    bridgeClient = null;
+  });
 
   function setStatus(key: StatusKey, status: StatusState, autoHideMs?: number): void {
     const timeoutId = statusTimeouts.get(key);
@@ -304,6 +361,48 @@
 
     if (msg.type === 'fetch-icon') {
       void fetchIconSVG(msg.iconName, msg.iconFamily, msg.nodeId);
+      return;
+    }
+
+    if (msg.type === 'bridge-result') {
+      if (!bridgeClient?.isConnected()) {
+        return;
+      }
+
+      if (msg.payload.kind === 'bridge.runtimeInfo') {
+        bridgeClient.send({
+          kind: 'plugin.hello',
+          pluginSessionId,
+          timestamp: Date.now(),
+          payload: msg.payload.result
+        });
+        return;
+      }
+
+      bridgeClient.send({
+        kind: 'plugin.result',
+        pluginSessionId,
+        requestId: msg.requestId,
+        timestamp: Date.now(),
+        payload: msg.payload
+      });
+      return;
+    }
+
+    if (msg.type === 'bridge-error') {
+      if (!bridgeClient?.isConnected()) {
+        return;
+      }
+
+      bridgeClient.send({
+        kind: 'plugin.error',
+        pluginSessionId,
+        requestId: msg.requestId,
+        timestamp: Date.now(),
+        payload: {
+          error: msg.error
+        }
+      });
       return;
     }
 

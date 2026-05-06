@@ -11,6 +11,7 @@ import {
   mimeTypeToExtension,
   normalizeImagePath,
   sanitizeFileNamePart,
+  shouldRasterizeNodeForImageTransform,
   uint8ArrayToBase64
 } from '../src/plugin/utils/image.ts';
 import type { ExportContext } from '../src/plugin/export/types.ts';
@@ -111,4 +112,25 @@ test('exportNodeToPngAsset caches exported assets', async () => {
   assert.equal(exportCalls, 1);
   assert.equal(first.fileName, 'Hero-Section-node-1.png');
   assert.match(first.dataUrl, /^data:image\/png;base64,/);
+});
+
+test('shouldRasterizeNodeForImageTransform rasterizes locked groups only when exportable', () => {
+  const lockedGroup = {
+    id: 'group:1',
+    type: 'GROUP',
+    name: 'Locked Group',
+    locked: true,
+    children: [],
+    exportAsync: async () => new Uint8Array()
+  };
+  const nonExportableLockedGroup = {
+    id: 'group:2',
+    type: 'GROUP',
+    name: 'Locked Group',
+    locked: true,
+    children: []
+  };
+
+  assert.equal(shouldRasterizeNodeForImageTransform(lockedGroup as unknown as SceneNode), true);
+  assert.equal(shouldRasterizeNodeForImageTransform(nonExportableLockedGroup as unknown as SceneNode), false);
 });

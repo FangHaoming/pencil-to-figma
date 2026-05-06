@@ -5,6 +5,7 @@
   "api": "1.0.0",
   "main": "dist/code.js",
   "capabilities": [],
+  "enablePrivatePluginApi": true,
   "enableProposedApi": false,
   "editorType": [
     "figma"
@@ -12,7 +13,11 @@
   "ui": "dist/ui.html",
   "networkAccess": {
     "allowedDomains": [
-      "none"
+      "https://cdn.jsdelivr.net"
+    ],
+    "devAllowedDomains": [
+      "http://localhost:3210",
+      "ws://localhost:3210"
     ]
   }
 }

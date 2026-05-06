@@ -6,6 +6,7 @@
   "scripts": {
     "build": "rm -rf dist && vite build --config vite.plugin.config.ts && vite build --config vite.ui.config.ts",
     "dev": "vite build --watch --config vite.plugin.config.ts & vite build --watch --config vite.ui.config.ts",
+    "mcp": "tsx mcp/server.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -13,9 +14,15 @@
     "@figma/plugin-typings": "^1.124.0",
     "@sveltejs/vite-plugin-svelte": "^5.1.1",
     "@types/node": "^25.6.0",
+    "@types/ws": "^8.18.1",
     "svelte": "^5.55.4",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^6.4.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
   }
 }

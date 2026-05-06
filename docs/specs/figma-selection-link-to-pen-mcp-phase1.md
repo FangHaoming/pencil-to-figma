@@ -1,605 +1,237 @@
-# Figma Selection Link -> `.pen` MCP Phase 1
+# Figma Selection Link -> Local Bridge MCP Phase 1
 
 ## 0. Meta
 
-- Task: `figma-selection-link-to-pen-mcp-phase1`
-- Phase: `Plan`
-- Approval Status: `Draft, Ready for Plan Approved`
-- Goal: 基于 Figma selection link，通过本地 `bridge + MCP` 导出目标节点为 `.pen`
-- Primary Path: `link -> parse(fileKey,nodeId) -> bridge match session -> plugin exportNodeById -> return/save .pen`
+- Task: `figma-selection-link-to-local-bridge-mcp-phase1`
+- Phase: `Execute`
+- Approval Status: `Plan Approved, Implemented Pending Manual Validation`
+- Goal: 基于 Figma selection link，通过本地 `plugin UI + bridge + MCP` 获取节点设计信息
+- Primary Path: `link -> parse(fileKey,nodeId) -> local mcp -> local bridge -> plugin ui -> plugin main -> return structured result`
 
 ## 1. Context Sources
 
 - 当前仓库：`pencil-to-figma`
-- 现有导出链路：
+- 现有插件入口：
   - `src/plugin/main.ts`
-  - `src/plugin/export/pipeline.ts`
-  - `src/plugin/export/node-to-element.ts`
-- 现有消息协议：
-  - `src/shared/messages.ts`
-- 现有插件配置：
+  - `src/ui/App.svelte`
   - `manifest.json`
-- Figma 官方文档：
-  - `Plugin Manifest`
-  - `Making Network Requests`
+- 现有导出复用点：
+  - `src/plugin/export/node-to-element.ts`
+  - `src/plugin/utils/image.ts`
+- 新增本地能力：
+  - `src/shared/figma-link.ts`
+  - `src/shared/bridge.ts`
+  - `bridge/*`
+  - `mcp/*`
 
 ## 2. Goal
 
-构建一个本地可用的 MCP 工作流，使 Cursor 可以调用：
+提供一个本地可用的 MCP 方案，绕过官方 Figma MCP 的读接口调用限制。
 
-`export_pen_from_figma_selection_link(link, outputPath?, includeAssets?)`
-
-并完成以下动作：
+Phase 1 核心能力：
 
 1. 解析 Figma selection link
-2. 提取 `fileKey` 与 `nodeId`
-3. 通过本地 bridge 找到匹配 `fileKey` 的在线插件实例
-4. 让插件按 `nodeId` 导出 `.pen`
-5. 将 `.pen` JSON 返回给 Cursor，或写入工作区文件
+2. 按 `fileKey` 匹配在线插件会话
+3. 读取节点 `metadata`
+4. 读取节点 `design context`
+5. 读取节点 `screenshot`
+6. 读取节点 `variable defs`
+7. `download image`
+8. `export node png`
 
 补充调用提示词：`用figma mcp获取设计稿`
 
 ## 3. In Scope
 
-- 根据 selection link 导出单个节点
-- 只支持目标 Figma 文件已打开
-- 只支持桥接插件已在线
-- 支持返回 `.pen` JSON
-- 支持可选 `includeAssets`
-- 支持可选 `outputPath`
+- 本地插件桥接
+- 单节点 selection link 工作流
+- `get_bridge_status`
+- `get_metadata_from_figma_selection_link`
+- `get_design_context_from_figma_selection_link`
+- `get_screenshot_from_figma_selection_link`
+- `get_variable_defs_from_figma_selection_link`
+- `download_image_from_figma_selection_link`
+- `export_node_png_from_figma_selection_link`
 
 ## 4. Out of Scope
 
+- 写回 Figma
+- 对齐官方 MCP 全量工具
+- 多节点批量抓取
 - 自动打开 Figma 文件
 - 自动切换到目标页面
-- 纯无插件的远程 Figma API 导出
-- `.pen -> Figma` 导入
-- 多插件实例的高级调度策略
-- 大文件/大图片分块传输优化
-- 完整 monorepo 重构
+- 完整远程无插件方案
 
 ## 5. Resolved Decisions
 
-### 5.1 fileKey 获取
+### 5.1 运行形态
 
-- 结论：插件侧可以拿到当前 Figma 文件的 `fileKey`
-- 影响：Phase 1 可以按 `fileKey` 精确匹配 bridge session
+- 采用本地桥接模式
+- 要求目标 Figma 文件已打开且插件 UI 在线
+- bridge 端口默认 `3210`
 
-### 5.2 manifest 网络访问
+### 5.2 设计上下文来源
 
-- 结论：Figma 官方文档确认 `networkAccess` 支持 `http` / `https` / `ws` / `wss`
-- 结论：Figma 官方文档确认 `devAllowedDomains` 可用于本地/开发服务器
-- 结论：`localhost` 在文档中属于支持范围
-- 决策：Phase 1 使用本地 WebSocket bridge 方案
+- `design context` 不复刻官方 React + Tailwind 文本
+- 不复用 `.pen` / Pencil 导出链路
+- 返回更接近 Figma API 字段命名和分层的结构化节点信息
+- 主要字段包括 `absoluteBoundingBox`、`absoluteRenderBounds`、`relativeTransform`、`fills`、`strokes`、`effects`、`layout`、`text`、`component`、`variables`、`children`
+
+### 5.3 图片相关能力
+
+- `screenshot` 语义：节点整体 PNG 截图
+- `download image` 语义：优先下载节点上的原始 image fill 资源；若节点命中 `.pen` 导出的 rasterize 规则（例如 locked group），则导出整个节点 PNG
+- `export node png` 语义：显式把节点导出成 PNG
 
 ## 6. Architecture
 
 ### 6.1 Components
 
-- MCP Server
-  - 对 Cursor 暴露工具
-  - 解析 selection link
-  - 调用 bridge
-- Local Bridge
-  - 管理插件会话
-  - 转发导出任务
-  - 跟踪请求状态
+- Cursor MCP Client
+- Local MCP Server
+- Local WebSocket Bridge
 - Figma Plugin UI
-  - 连接 bridge
-  - 在 bridge 与主线程之间转发消息
 - Figma Plugin Main
-  - 执行 `exportNodeById`
-  - 调用现有 `.pen` 导出逻辑
 
 ### 6.2 Flow
 
-`Cursor -> MCP -> Bridge -> Plugin UI -> Plugin Main -> ExportBundle -> Bridge -> MCP -> Cursor`
-
-## 7. Manifest Baseline
-
-开发态建议配置：
-
-```json
-{
-  "networkAccess": {
-    "allowedDomains": ["none"],
-    "devAllowedDomains": [
-      "http://localhost:3210",
-      "ws://localhost:3210"
-    ]
-  }
-}
-```
-
-说明：
-
-- Phase 1 固定 bridge 端口为 `3210`
-- 若实测 `ws://localhost:3210` 在 Figma 环境存在限制，则退回到基于 `http://localhost:3210` 的实际可用方案，再同步更新本 spec
-
-## 8. Stable Data Contracts
-
-### 8.1 `src/shared/figma-link.ts`
-
-```ts
-export type ParsedFigmaSelectionLink = {
-  url: string;
-  fileKey: string;
-  nodeId: string;
-  pageId?: string;
-  originalNodeId?: string;
-};
-
-export type ParseFigmaLinkResult =
-  | { ok: true; value: ParsedFigmaSelectionLink }
-  | { ok: false; error: string };
-```
-
-### 8.2 `src/shared/bridge.ts`
-
-```ts
-import type { PenAsset, PenDocument } from './pen';
-
-export type PluginCapability =
-  | 'export.nodeById'
-  | 'export.selection'
-  | 'export.page';
-
-export type BridgeCommand =
-  | {
-      kind: 'bridge.export.nodeById';
-      requestId: string;
-      timestamp: number;
-      payload: {
-        nodeId: string;
-        includeAssets?: boolean;
-      };
-    }
-  | {
-      kind: 'bridge.export.selection';
-      requestId: string;
-      timestamp: number;
-      payload: {
-        includeAssets?: boolean;
-      };
-    }
-  | {
-      kind: 'bridge.export.page';
-      requestId: string;
-      timestamp: number;
-      payload: {
-        includeAssets?: boolean;
-      };
-    }
-  | {
-      kind: 'bridge.ping';
-      requestId: string;
-      timestamp: number;
-    };
-
-export type PluginEvent =
-  | {
-      kind: 'plugin.hello';
-      pluginSessionId: string;
-      timestamp: number;
-      payload: {
-        fileKey?: string;
-        fileName?: string;
-        pageId?: string;
-        pageName?: string;
-        capabilities: PluginCapability[];
-      };
-    }
-  | {
-      kind: 'plugin.result';
-      pluginSessionId: string;
-      requestId: string;
-      timestamp: number;
-      payload: {
-        data: PenDocument;
-        assets: PenAsset[];
-      };
-    }
-  | {
-      kind: 'plugin.error';
-      pluginSessionId: string;
-      requestId: string;
-      timestamp: number;
-      payload: {
-        error: string;
-      };
-    }
-  | {
-      kind: 'plugin.pong';
-      pluginSessionId: string;
-      requestId: string;
-      timestamp: number;
-    };
-```
-
-### 8.3 `src/shared/messages.ts`
-
-Bridge 专用新增协议：
-
-```ts
-export type UiToPluginMessage =
-  | { type: 'bridge-export-node'; requestId: string; nodeId: string; includeAssets?: boolean }
-  | { type: 'bridge-export-selection'; requestId: string; includeAssets?: boolean }
-  | { type: 'bridge-export-page'; requestId: string; includeAssets?: boolean }
-  | { type: 'bridge-get-runtime-info'; requestId: string }
-  // 保留原有消息
-  | { type: 'ready-to-place'; data: PenDocument; images?: Record<string, string> | null }
-  | { type: 'import-pen'; data: PenDocument; images?: Record<string, string> | null }
-  | { type: 'place-import'; data: PenDocument; images?: Record<string, string> | null }
-  | { type: 'export-pen' }
-  | { type: 'icon-svg-fetched'; nodeId: string; svgPath: string | null; iconName?: string; error?: string }
-  | { type: 'close-after-download' }
-  | { type: 'close' };
-
-export type PluginToUiMessage =
-  | {
-      type: 'bridge-export-result';
-      requestId: string;
-      data: PenDocument;
-      assets: PenAsset[];
-    }
-  | {
-      type: 'bridge-export-error';
-      requestId: string;
-      error: string;
-    }
-  | {
-      type: 'bridge-runtime-info';
-      requestId: string;
-      fileKey?: string;
-      fileName?: string;
-      pageId?: string;
-      pageName?: string;
-      capabilities: Array<'export.nodeById' | 'export.selection' | 'export.page'>;
-    };
-```
-
-## 9. Final Function Signatures
-
-### 9.1 `src/plugin/export/pipeline.ts`
-
-```ts
-import type { ExportBundle } from './types.js';
-
-export type ExportPipelineDeps = {
-  convertNodesToPenBundle: (nodes: readonly SceneNode[], includeAssets?: boolean) => Promise<ExportBundle>;
-};
-
-export async function exportNodesToPen(
-  nodes: readonly SceneNode[],
-  deps: ExportPipelineDeps,
-  includeAssets = true
-): Promise<ExportBundle>;
-
-export async function exportCurrentSelectionToPen(
-  deps: ExportPipelineDeps,
-  includeAssets = true
-): Promise<ExportBundle>;
-```
-
-### 9.2 `src/plugin/main.ts`
-
-```ts
-import type { ExportBundle } from './export/types.js';
-
-type PluginRuntimeInfo = {
-  fileKey?: string;
-  fileName?: string;
-  pageId?: string;
-  pageName?: string;
-  capabilities: Array<'export.nodeById' | 'export.selection' | 'export.page'>;
-};
-
-function isSceneNode(node: BaseNode | null): node is SceneNode;
-
-function getPluginRuntimeInfo(): PluginRuntimeInfo;
-
-async function convertNodesToPenBundle(
-  nodes: readonly SceneNode[],
-  includeAssets?: boolean
-): Promise<ExportBundle>;
-
-async function exportNodeById(
-  nodeId: string,
-  includeAssets?: boolean
-): Promise<ExportBundle>;
-
-async function exportCurrentSelectionBundle(
-  includeAssets?: boolean
-): Promise<ExportBundle>;
-
-async function exportCurrentPageBundle(
-  includeAssets?: boolean
-): Promise<ExportBundle>;
-```
-
-`figma.ui.onmessage` 在 bridge 模式只处理：
-
-- `bridge-export-node`
-- `bridge-export-selection`
-- `bridge-export-page`
-- `bridge-get-runtime-info`
-
-bridge 模式只返回：
-
-- `bridge-export-result`
-- `bridge-export-error`
-- `bridge-runtime-info`
-
-### 9.3 `src/ui/bridge-client.ts`
-
-```ts
-import type { BridgeCommand, PluginEvent } from '../shared/bridge';
-
-export type BridgeClientOptions = {
-  url: string;
-  onOpen?: () => void;
-  onClose?: () => void;
-  onError?: (error: Error) => void;
-  onCommand?: (command: BridgeCommand) => void;
-};
-
-export type BridgeClient = {
-  connect(): void;
-  disconnect(): void;
-  send(event: PluginEvent): void;
-  isConnected(): boolean;
-};
-
-export function createBridgeClient(options: BridgeClientOptions): BridgeClient;
-```
-
-### 9.4 `bridge/sessions.ts`
-
-```ts
-import type { PluginCapability } from '../src/shared/bridge';
-
-export type PluginSession = {
-  pluginSessionId: string;
-  fileKey?: string;
-  fileName?: string;
-  pageId?: string;
-  pageName?: string;
-  capabilities: PluginCapability[];
-  connectedAt: number;
-  lastSeenAt: number;
-  status: 'idle' | 'busy';
-};
-
-export function registerSession(session: PluginSession): void;
-export function updateSession(sessionId: string, patch: Partial<PluginSession>): void;
-export function touchSession(sessionId: string): void;
-export function removeSession(sessionId: string): void;
-export function listSessions(): PluginSession[];
-export function findSessionByFileKey(fileKey: string): PluginSession | null;
-export function findAnyCapableSession(capability: PluginCapability): PluginSession | null;
-```
-
-### 9.5 `bridge/tasks.ts`
-
-```ts
-export type TaskResult<T> = Promise<T>;
-
-export function createTask<T>(requestId: string, timeoutMs: number): TaskResult<T>;
-export function resolveTask<T>(requestId: string, value: T): void;
-export function rejectTask(requestId: string, error: Error): void;
-export function hasTask(requestId: string): boolean;
-```
-
-### 9.6 `bridge/server.ts`
-
-```ts
-import type { PenAsset, PenDocument } from '../src/shared/pen';
-import type { PluginSession } from './sessions';
-
-export type ExportNodeByIdArgs = {
-  fileKey: string;
-  nodeId: string;
-  includeAssets?: boolean;
-  timeoutMs?: number;
-};
-
-export type BridgeExportResult = {
-  data: PenDocument;
-  assets: PenAsset[];
-};
-
-export type BridgeStatus = {
-  connected: boolean;
-  sessions: PluginSession[];
-};
-
-export type BridgeServer = {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  exportNodeById(args: ExportNodeByIdArgs): Promise<BridgeExportResult>;
-  getStatus(): BridgeStatus;
-};
-
-export function createBridgeServer(args: {
-  port: number;
-}): BridgeServer;
-```
-
-固定错误文案：
-
-- `No plugin session connected`
-- `No plugin session matches fileKey`
-- `Plugin task timed out`
-- `Plugin returned error: <message>`
-- `Plugin capability not supported: export.nodeById`
-
-### 9.7 `mcp/tools/export-from-selection-link.ts`
-
-```ts
-import type { PenAsset, PenDocument } from '../../src/shared/pen';
-import type { ParsedFigmaSelectionLink } from '../../src/shared/figma-link';
-import type { BridgeServer } from '../../bridge/server';
-
-export type ExportFromSelectionLinkArgs = {
-  link: string;
-  outputPath?: string;
-  includeAssets?: boolean;
-};
-
-export type ExportFromSelectionLinkResult = {
-  ok: boolean;
-  fileKey?: string;
-  nodeId?: string;
-  savedPath?: string;
-  data?: PenDocument;
-  assets?: PenAsset[];
-  error?: string;
-};
-
-export function parseFigmaSelectionLink(link: string): ParsedFigmaSelectionLink;
-
-export async function exportPenFromFigmaSelectionLink(
-  args: ExportFromSelectionLinkArgs,
-  deps: {
-    bridge: BridgeServer;
-    writeFile?: (path: string, content: string) => Promise<void>;
-  }
-): Promise<ExportFromSelectionLinkResult>;
-```
-
-### 9.8 `mcp/tools/get-bridge-status.ts`
-
-```ts
-import type { BridgeServer } from '../../bridge/server';
-
-export type GetBridgeStatusResult = {
-  connected: boolean;
-  sessions: Array<{
-    pluginSessionId: string;
-    fileKey?: string;
-    fileName?: string;
-    pageId?: string;
-    pageName?: string;
-    capabilities: string[];
-    status: 'idle' | 'busy';
-  }>;
-};
-
-export async function getBridgeStatus(
-  deps: { bridge: BridgeServer }
-): Promise<GetBridgeStatusResult>;
-```
-
-## 10. File Changes
-
-### 10.1 Existing Files
-
-- `manifest.json`
-- `src/shared/messages.ts`
-- `src/plugin/main.ts`
-- `src/plugin/export/pipeline.ts`
-- `src/ui/App.svelte`
-
-### 10.2 New Files
-
-- `src/shared/bridge.ts`
+`Cursor -> local MCP -> bridge -> plugin ui -> plugin main -> structured result -> Cursor`
+
+## 7. Stable Contracts
+
+### 7.1 Link Parsing
+
+文件：`src/shared/figma-link.ts`
+
+- 支持 `design` / `file` / `make` / `board` 形式链接
+- 支持 `design/.../branch/...` 分支链接
+- 规范化 `node-id`：`- -> :`
+
+### 7.2 Bridge Protocol
+
+文件：`src/shared/bridge.ts`
+
+Capabilities:
+
+- `read.metadata`
+- `read.designContext`
+- `read.screenshot`
+- `read.variableDefs`
+- `read.downloadImage`
+
+Bridge Commands:
+
+- `bridge.getRuntimeInfo`
+- `bridge.read.metadata`
+- `bridge.read.designContext`
+- `bridge.read.screenshot`
+- `bridge.read.variableDefs`
+- `bridge.read.downloadImage`
+
+Plugin Events:
+
+- `plugin.hello`
+- `plugin.result`
+- `plugin.error`
+- `plugin.pong`
+
+### 7.3 Tool Names
+
+- `get_bridge_status`
+- `get_metadata_from_figma_selection_link`
+- `get_design_context_from_figma_selection_link`
+- `get_screenshot_from_figma_selection_link`
+- `get_variable_defs_from_figma_selection_link`
+- `download_image_from_figma_selection_link`
+- `export_node_png_from_figma_selection_link`
+
+## 8. Implemented File Changes
+
+### 8.1 New Files
+
 - `src/shared/figma-link.ts`
+- `src/shared/bridge.ts`
+- `src/plugin/bridge-read.ts`
 - `src/ui/bridge-client.ts`
 - `bridge/server.ts`
 - `bridge/sessions.ts`
 - `bridge/tasks.ts`
 - `mcp/server.ts`
-- `mcp/tools/export-from-selection-link.ts`
+- `mcp/tools/shared.ts`
 - `mcp/tools/get-bridge-status.ts`
+- `mcp/tools/get-metadata-from-selection-link.ts`
+- `mcp/tools/get-design-context-from-selection-link.ts`
+- `mcp/tools/get-screenshot-from-selection-link.ts`
+- `mcp/tools/get-variable-defs-from-selection-link.ts`
+- `mcp/tools/download-image-from-selection-link.ts`
+- `mcp/tools/export-node-png-from-selection-link.ts`
+- `tests/figma-link.test.ts`
 
-## 11. Fixed Behavioral Constraints
+### 8.2 Updated Files
 
-### 11.1 Bridge 模式不触发下载
+- `src/shared/messages.ts`
+- `src/plugin/main.ts`
+- `src/ui/App.svelte`
+- `manifest.json`
+- `package.json`
+- `tsconfig.json`
 
-桥接导出只返回结构化结果，不走：
+## 9. Validation Status
 
-- `download-pen`
-- `close-after-download`
+### 9.1 Automated Validation
 
-### 11.2 `includeAssets` 默认值
+- [x] `npm run typecheck`
+- [x] `npm test`
 
-- MCP 入口默认 `includeAssets = true`
-- 调试阶段允许显式传 `false`
+### 9.2 Pending Manual Validation
 
-### 11.3 `outputPath`
+- [ ] 启动插件并确认 UI 能连上 `ws://localhost:3210`
+- [ ] 启动本地 MCP server：`npm run mcp`
+- [ ] 在真实 Figma 文件中验证 `plugin.hello`
+- [ ] 用真实 selection link 验证 5 个核心工具
 
-- 如果提供，写文件
-- 如果未提供，直接返回 `data + assets`
+## 10. Error Contract
 
-### 11.4 文件匹配策略
+当前固定错误文案：
 
-- Phase 1 必须按 `fileKey` 精确匹配 session
-- 不做模糊匹配
-- 不做自动切换文件
+- `Invalid Figma selection link`
+- `Missing node-id in Figma link`
+- `No plugin session connected`
+- `No plugin session matches fileKey`
+- `Plugin capability not supported: <capability>`
+- `Plugin task timed out`
+- `Plugin returned error: <message>`
+- `Node not found or not accessible`
 
-### 11.5 节点导出范围
+## 11. Active Checklist
 
-- 导出 `nodeId` 对应节点及其子树
-- 不自动补兄弟节点
-- 不自动导出整页
+- [x] 实现 `src/shared/figma-link.ts`
+- [x] 实现 `src/shared/bridge.ts`
+- [x] 扩展 `src/shared/messages.ts`
+- [x] 在 `src/plugin/main.ts` 接入 bridge command 分发
+- [x] 新增 `src/plugin/bridge-read.ts`
+- [x] 新增 `src/ui/bridge-client.ts`
+- [x] 在 `src/ui/App.svelte` 接入 bridge client
+- [x] 实现 `bridge/server.ts`
+- [x] 实现 `bridge/sessions.ts`
+- [x] 实现 `bridge/tasks.ts`
+- [x] 实现 `mcp/server.ts`
+- [x] 实现 MCP tools
+- [x] 补充 link parsing tests
+- [ ] 完成真实 Figma 手工链路验证
 
-## 12. Acceptance Criteria
+## 12. Known Gaps
 
-1. `parseFigmaSelectionLink()` 能稳定解析真实 selection link
-2. 插件启动后能向 bridge 发 `plugin.hello`
-3. bridge 能根据 `fileKey` 找到目标 session
-4. `exportNodeById(nodeId)` 能返回 `ExportBundle`
-5. MCP 工具能返回 `.pen` JSON
-6. `outputPath` 提供时能成功写盘
-7. 插件手动导出工作流不受影响
-8. manifest 本地网络配置经真实验证可用
+- `variable defs` 当前基于 `boundVariables` 做 best-effort 提取，不保证覆盖所有变量来源
+- `variable defs` 当前会递归子树，并补采 `boundVariables`、`fills`、`strokes`、`effects`、text segments 中的变量引用
+- `download image` 当前支持 image fill，并对 locked group 等 rasterize 节点返回整体 PNG；显式节点 PNG 导出走 `export_node_png_from_figma_selection_link`
+- 尚未验证 Figma 桌面端/网页端对本地 `ws://localhost:3210` 的实际可用性差异
 
-## 13. Validation Plan
+## 13. Next Action
 
-- 合法 link + 在线插件 -> 成功导出
-- 非法 link -> 明确报错
-- `fileKey` 不匹配 -> 明确报错
-- `nodeId` 不存在 -> 明确报错
-- `includeAssets=false` -> 成功
-- 现有手动导出流程无回归
+下一步应进入真实链路验证：
 
-## 14. Open Questions
-
-- `ws://localhost:3210` 在 Figma 实际插件环境中的行为是否与文档规则完全一致
-- `outputPath` 的默认落盘策略是否需要在 Phase 2 再补标准化目录约定
-- 后续是否需要支持一个 `export.selection` 作为调试工具
-
-## 15. Active Checklist
-
-- [ ] 更新 `manifest.json` 开发态网络配置
-- [ ] 新增 `src/shared/bridge.ts`
-- [ ] 新增 `src/shared/figma-link.ts`
-- [ ] 抽出 `exportNodesToPen`
-- [ ] 在 `main.ts` 增加 `exportNodeById`
-- [ ] 在 `messages.ts` 增加 bridge 专用消息
-- [ ] 新增 `src/ui/bridge-client.ts`
-- [ ] 在 `App.svelte` 接入 bridge client
-- [ ] 实现 `bridge/server.ts`
-- [ ] 实现 `bridge/sessions.ts`
-- [ ] 实现 `bridge/tasks.ts`
-- [ ] 实现 `mcp/tools/export-from-selection-link.ts`
-- [ ] 实现 `mcp/tools/get-bridge-status.ts`
-- [ ] 完成真实 selection link 验证
-
-## 16. Next Action
-
-等待用户明确批准执行：
-
-`Plan Approved`
-
-收到后进入 Execute，按最小切口顺序实现：
-
-1. `src/plugin/export/pipeline.ts`
-2. `src/plugin/main.ts`
-3. `src/shared/messages.ts`
-4. `src/shared/bridge.ts`
-5. `src/shared/figma-link.ts`
-6. `src/ui/bridge-client.ts`
-7. `src/ui/App.svelte`
-8. `bridge/*`
-9. `mcp/*`
+1. 启动 `npm run mcp`
+2. 在 Figma 中加载插件
+3. 确认 bridge session 上线
+4. 用真实 selection link 调用 MCP 工具

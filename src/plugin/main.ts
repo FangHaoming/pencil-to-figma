@@ -13,7 +13,17 @@ import {
   createInstances as createInstancesImpl,
   createNode as createNodeImpl
 } from './nodes/factory';
+import {
+  downloadNodeImage,
+  exportNodePng,
+  getNodeDesignContext,
+  getNodeMetadata,
+  getNodeScreenshot,
+  getNodeVariableDefs,
+  getPluginRuntimeInfo
+} from './bridge-read';
 import type { UiToPluginMessage } from '../shared/messages';
+import type { BridgeCommand, BridgeSuccessPayload } from '../shared/bridge';
 import type { PenAnalysis, PenDocument, PenElement } from '../shared/pen';
 import type { NodeContainer, VariableMap } from './nodes/types.js';
 import type { ExportBundle, ExportContext, ExportedPenElement } from './export/types.js';
@@ -120,6 +130,55 @@ async function convertNodesToPenBundle(nodes: readonly SceneNode[]): Promise<Exp
   };
 }
 
+async function handleBridgeCommand(command: BridgeCommand): Promise<BridgeSuccessPayload> {
+  switch (command.kind) {
+    case 'bridge.getRuntimeInfo':
+      return {
+        kind: 'bridge.runtimeInfo',
+        result: getPluginRuntimeInfo()
+      };
+    case 'bridge.read.metadata':
+      return {
+        kind: 'read.metadata',
+        result: await getNodeMetadata(command.payload.nodeId)
+      };
+    case 'bridge.read.designContext':
+      return {
+        kind: 'read.designContext',
+        result: await getNodeDesignContext(command.payload.nodeId)
+      };
+    case 'bridge.read.screenshot':
+      return {
+        kind: 'read.screenshot',
+        result: await getNodeScreenshot(command.payload.nodeId)
+      };
+    case 'bridge.read.variableDefs':
+      return {
+        kind: 'read.variableDefs',
+        result: await getNodeVariableDefs(command.payload.nodeId)
+      };
+    case 'bridge.read.downloadImage':
+      return {
+        kind: 'read.downloadImage',
+        result: await downloadNodeImage(command.payload.nodeId)
+      };
+    case 'bridge.read.exportNodePng':
+      return {
+        kind: 'read.exportNodePng',
+        result: await exportNodePng(command.payload.nodeId)
+      };
+    case 'bridge.ping':
+      return {
+        kind: 'bridge.runtimeInfo',
+        result: getPluginRuntimeInfo()
+      };
+    default: {
+      const exhaustiveCheck: never = command;
+      throw new Error(`Unsupported bridge command: ${String(exhaustiveCheck)}`);
+    }
+  }
+}
+
 figma.ui.onmessage = async (msg: UiToPluginMessage): Promise<void> => {
   if (msg.type === 'import-pen') {
     try {
@@ -157,6 +216,22 @@ figma.ui.onmessage = async (msg: UiToPluginMessage): Promise<void> => {
       const typedError = error instanceof Error ? error : new Error(String(error));
       console.error('[EXPORT] export-pen failed', typedError.message, typedError.stack);
       figma.ui.postMessage({ type: 'export-error', error: typedError.message });
+    }
+  } else if (msg.type === 'bridge-command') {
+    try {
+      const payload = await handleBridgeCommand(msg.command);
+      figma.ui.postMessage({
+        type: 'bridge-result',
+        requestId: msg.command.requestId,
+        payload
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      figma.ui.postMessage({
+        type: 'bridge-error',
+        requestId: msg.command.requestId,
+        error: message
+      });
     }
   } else if (msg.type === 'icon-svg-fetched') {
     try {
