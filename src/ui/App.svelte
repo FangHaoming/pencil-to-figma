@@ -1,246 +1,46 @@
 <script lang="ts">
   import type { PluginMessageEnvelope, PluginToUiMessage, UiToPluginMessage } from '../shared/messages';
-  import type { PenAnalysis, PenAsset, PenDocument } from '../shared/pen';
+  import type { PenAsset, PenDocument } from '../shared/pen';
 
-  type TabName = 'import' | 'export';
-  type ImageMap = Record<string, string>;
   type StatusType = 'success' | 'error' | 'info';
-  type StepName = 'upload' | 'place';
-  type StatusKey = 'upload' | 'images' | 'export';
-
   type StatusState = {
     type: StatusType;
     message: string;
   } | null;
+  type ExportProgress = {
+    stage: 'export' | 'package';
+    label: string;
+  } | null;
 
-  type FileMeta = {
-    name: string;
-    version: string;
-    elementCount: number;
-  };
-
-  let activeTab: TabName = 'import';
-  let currentStep: StepName = 'upload';
-  let isDropActive = false;
-  let isPlacing = false;
   let isExporting = false;
-
-  let penFileData: PenDocument | null = null;
-  let imagesData: ImageMap | null = null;
-  let fileMeta: FileMeta | null = null;
-  let analysis: PenAnalysis | null = null;
-
-  let uploadStatus: StatusState = null;
-  let imagesStatus: StatusState = null;
   let exportStatus: StatusState = null;
-
-  let fileInput: HTMLInputElement | null = null;
-  let imagesInput: HTMLInputElement | null = null;
-
-  const statusTimeouts = new Map<StatusKey, number>();
-
-  $: analysisTypesText = analysis
-    ? Object.entries(analysis.elementTypes)
-        .map(([type, count]) => `${type}: ${count}`)
-        .join(', ')
-    : '';
+  let exportProgress: ExportProgress = null;
 
   function postPluginMessage(message: UiToPluginMessage): void {
     parent.postMessage({ pluginMessage: message }, '*');
   }
 
-  function setStatus(key: StatusKey, status: StatusState, autoHideMs?: number): void {
-    const timeoutId = statusTimeouts.get(key);
-    if (timeoutId) {
-      window.clearTimeout(timeoutId);
-      statusTimeouts.delete(key);
-    }
-
-    if (key === 'upload') uploadStatus = status;
-    if (key === 'images') imagesStatus = status;
-    if (key === 'export') exportStatus = status;
-
-    if (status && autoHideMs) {
-      const nextTimeoutId = window.setTimeout(() => {
-        if (key === 'upload') uploadStatus = null;
-        if (key === 'images') imagesStatus = null;
-        if (key === 'export') exportStatus = null;
-        statusTimeouts.delete(key);
-      }, autoHideMs);
-      statusTimeouts.set(key, nextTimeoutId);
-    }
+  function setExportStatus(status: StatusState): void {
+    exportStatus = status;
   }
 
-  function selectTab(tab: TabName): void {
-    activeTab = tab;
+  function setExportProgress(progress: ExportProgress): void {
+    exportProgress = progress;
   }
 
-  function goToStep(step: StepName): void {
-    currentStep = step;
-  }
-
-  function resetImportState(): void {
-    currentStep = 'upload';
-    isDropActive = false;
-    isPlacing = false;
-    penFileData = null;
-    imagesData = null;
-    fileMeta = null;
-    analysis = null;
-    uploadStatus = null;
-    imagesStatus = null;
-
-    if (fileInput) {
-      fileInput.value = '';
-    }
-
-    if (imagesInput) {
-      imagesInput.value = '';
-    }
-  }
-
-  async function handlePenFile(file: File): Promise<void> {
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text) as PenDocument;
-
-      penFileData = parsed;
-      fileMeta = {
-        name: file.name,
-        version: parsed.version || 'Unknown',
-        elementCount: parsed.children ? parsed.children.length : 0
-      };
-      analysis = null;
-
-      setStatus('upload', {
-        type: 'success',
-        message: '✓ File loaded successfully'
-      }, 3000);
-    } catch (error) {
-      penFileData = null;
-      fileMeta = null;
-      analysis = null;
-      setStatus('upload', {
-        type: 'error',
-        message: '✗ Invalid .pen file: ' + getErrorMessage(error)
-      });
-    }
-  }
-
-  async function readFileAsDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result ?? ''));
-      reader.onerror = () => reject(reader.error ?? new Error('Failed to read image file'));
-      reader.readAsDataURL(file);
-    });
-  }
-
-  async function handleImagesSelection(fileList: FileList | null): Promise<void> {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-
-    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-    if (imageFiles.length === 0) {
-      imagesData = null;
-      setStatus('images', {
-        type: 'error',
-        message: '✗ No image files found in selected folder'
-      });
-      return;
-    }
-
-    const nextImagesData: ImageMap = {};
-
-    for (const file of imageFiles) {
-      const dataUrl = await readFileAsDataUrl(file);
-      const relativePath = ((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name).replace(/\\/g, '/');
-      const normalizedPath = relativePath.replace(/^\/+/, '');
-      const pathWithoutRoot = normalizedPath.includes('/') ? normalizedPath.split('/').slice(1).join('/') : normalizedPath;
-
-      nextImagesData[file.name] = dataUrl;
-      nextImagesData[normalizedPath] = dataUrl;
-      nextImagesData[`./${normalizedPath}`] = dataUrl;
-
-      if (pathWithoutRoot) {
-        nextImagesData[pathWithoutRoot] = dataUrl;
-        nextImagesData[`./${pathWithoutRoot}`] = dataUrl;
-      }
-    }
-
-    imagesData = nextImagesData;
-    setStatus('images', {
-      type: 'success',
-      message: `✓ Loaded ${imageFiles.length} images`
-    });
-  }
-
-  function handlePenInputChange(event: Event): void {
-    const target = event.currentTarget as HTMLInputElement;
-    const file = target.files?.[0];
-    if (file) {
-      void handlePenFile(file);
-    }
-  }
-
-  function handleImagesInputChange(event: Event): void {
-    const target = event.currentTarget as HTMLInputElement;
-    void handleImagesSelection(target.files);
-  }
-
-  function handleDragOver(): void {
-    isDropActive = true;
-  }
-
-  function handleDragLeave(): void {
-    isDropActive = false;
-  }
-
-  function handleDrop(event: DragEvent): void {
-    isDropActive = false;
-    const file = event.dataTransfer?.files?.[0];
-    if (file && file.name.endsWith('.pen')) {
-      void handlePenFile(file);
-    }
-  }
-
-  function openPenFilePicker(): void {
-    fileInput?.click();
-  }
-
-  function openImagesPicker(): void {
-    imagesInput?.click();
-  }
-
-  function handleNext(): void {
-    if (!penFileData) return;
-
-    goToStep('place');
-    postPluginMessage({
-      type: 'ready-to-place',
-      data: penFileData,
-      images: imagesData
-    });
-  }
-
-  function handleBack(): void {
-    goToStep('upload');
-  }
-
-  function handlePlace(): void {
-    if (!penFileData) return;
-
-    isPlacing = true;
-    postPluginMessage({
-      type: 'place-import',
-      data: penFileData,
-      images: imagesData
+  function setExportProgressStatus(current: number, total: number): void {
+    const label = `正在打包 ZIP（${current}/${total}）`;
+    setExportProgress({ stage: 'package', label });
+    setExportStatus({
+      type: 'info',
+      message: `正在打包第 ${current} / ${total} 个文件...`
     });
   }
 
   function handleExport(): void {
     isExporting = true;
-    setStatus('export', null);
+    setExportStatus(null);
+    setExportProgress(null);
     postPluginMessage({ type: 'export-pen' });
   }
 
@@ -248,36 +48,23 @@
     const msg = event.data?.pluginMessage as PluginToUiMessage | undefined;
     if (!msg) return;
 
-    if (msg.type === 'import-success') {
-      setStatus('upload', { type: 'success', message: '✓ Import successful' }, 3000);
-      return;
-    }
-
-    if (msg.type === 'import-error') {
-      isPlacing = false;
-      setStatus('upload', { type: 'error', message: '✗ Error: ' + msg.error });
-      return;
-    }
-
-    if (msg.type === 'placement-complete') {
-      resetImportState();
-      return;
-    }
-
     if (msg.type === 'export-data') {
       const assets = msg.assets || [];
-      void downloadExportPackage(msg.data, 'index.pen', assets)
+      const validAssetCount = assets.filter(isValidAsset).length;
+      void downloadExportPackage(msg.data, 'index.pen', assets, setExportProgressStatus)
         .then(() => {
-          const suffix = assets.length > 0 ? `，已打包 ${assets.length} 张图片` : '';
-          setStatus('export', {
+          const suffix = validAssetCount > 0 ? `，并打包了 ${validAssetCount} 张图片` : '';
+          setExportProgress(null);
+          setExportStatus({
             type: 'success',
-            message: `✓ Export successful${suffix}`
+            message: `已成功导出 .pen${suffix}`
           });
         })
         .catch((error) => {
-          setStatus('export', {
+          setExportProgress(null);
+          setExportStatus({
             type: 'error',
-            message: '✗ Error: ' + getErrorMessage(error)
+            message: '导出失败：' + getErrorMessage(error)
           });
         })
         .finally(() => {
@@ -286,34 +73,43 @@
       return;
     }
 
-    if (msg.type === 'export-error') {
-      isExporting = false;
-      setStatus('export', {
-        type: 'error',
-        message: '✗ Error: ' + msg.error
+    if (msg.type === 'export-progress') {
+      setExportProgress({
+        stage: msg.stage,
+        label: msg.message
+      });
+      setExportStatus({
+        type: 'info',
+        message: msg.message
       });
       return;
     }
 
-    if (msg.type === 'ready-to-place') {
-      penFileData = msg.data;
-      imagesData = msg.images || null;
-      analysis = msg.analysis || null;
-      return;
-    }
-
-    if (msg.type === 'fetch-icon') {
-      void fetchIconSVG(msg.iconName, msg.iconFamily, msg.nodeId);
+    if (msg.type === 'export-error') {
+      isExporting = false;
+      setExportProgress(null);
+      setExportStatus({
+        type: 'error',
+        message: '导出失败：' + msg.error
+      });
       return;
     }
 
     if (msg.type === 'download-pen') {
       const assets = msg.assets || [];
-      void downloadExportPackage(msg.data, msg.filename || 'index.pen', assets).then(() => {
-        window.setTimeout(() => {
-          postPluginMessage({ type: 'close-after-download' });
-        }, Math.max(800, 250 * (assets.length + 1)));
-      });
+      void downloadExportPackage(msg.data, msg.filename || 'index.pen', assets)
+        .then(() => {
+          window.setTimeout(() => {
+            postPluginMessage({ type: 'close-after-download' });
+          }, Math.max(800, 250 * (assets.length + 1)));
+        })
+        .catch((error) => {
+          isExporting = false;
+          setExportStatus({
+            type: 'error',
+            message: '下载失败：' + getErrorMessage(error)
+          });
+        });
     }
   }
 
@@ -449,12 +245,28 @@
     return penFilename.replace(/\.pen$/i, '') + '.zip';
   }
 
+  function isValidAsset(asset: PenAsset | null | undefined): asset is PenAsset {
+    return !!asset && !!asset.dataUrl && !!asset.fileName;
+  }
+
+  function nextRenderFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+  }
+
   async function downloadExportPackage(
     penData: PenDocument,
     penFilename: string,
-    assets: PenAsset[] = []
+    assets: PenAsset[] = [],
+    onProgress?: (current: number, total: number) => void
   ): Promise<void> {
-    if (!assets.length) {
+    const validAssets = assets.filter(isValidAsset);
+    const totalFiles = 1 + validAssets.length;
+
+    onProgress?.(1, totalFiles);
+
+    if (!validAssets.length) {
       const penBlob = new Blob([JSON.stringify(penData, null, 2)], { type: 'application/json' });
       downloadBlob(penBlob, penFilename);
       return;
@@ -466,78 +278,21 @@
       data: textEncoder.encode(JSON.stringify(penData, null, 2))
     }];
 
-    for (const asset of assets) {
-      if (!asset || !asset.dataUrl || !asset.fileName) {
-        continue;
-      }
+    await nextRenderFrame();
 
+    for (let index = 0; index < validAssets.length; index++) {
+      const asset = validAssets[index];
       zipEntries.push({
         name: asset.fileName,
         data: dataUrlToUint8Array(asset.dataUrl)
       });
+
+      onProgress?.(index + 2, totalFiles);
+      await nextRenderFrame();
     }
 
     const zipBlob = createStoredZip(zipEntries);
     downloadBlob(zipBlob, toZipFilename(penFilename));
-  }
-
-  async function fetchIconSVG(iconName: string, iconFamily: string, nodeId: string): Promise<void> {
-    try {
-      let svgUrl = '';
-
-      if (iconFamily === 'lucide' || iconFamily.toLowerCase().includes('lucide')) {
-        svgUrl = `https://cdn.jsdelivr.net/npm/lucide-static@latest/icons/${iconName}.svg`;
-      } else if (iconFamily.toLowerCase().includes('material')) {
-        postPluginMessage({
-          type: 'icon-svg-fetched',
-          nodeId,
-          svgPath: null,
-          error: 'Material Symbols not yet supported'
-        });
-        return;
-      } else {
-        postPluginMessage({
-          type: 'icon-svg-fetched',
-          nodeId,
-          svgPath: null,
-          error: 'Unknown icon family: ' + iconFamily
-        });
-        return;
-      }
-
-      const response = await fetch(svgUrl);
-      if (!response.ok) {
-        throw new Error('Icon not found: ' + iconName);
-      }
-
-      const svgText = await response.text();
-      const parser = new DOMParser();
-      const svgDoc = parser.parseFromString(svgText, 'image/svg+xml');
-      const pathElements = svgDoc.querySelectorAll('path, circle, rect, polygon, polyline');
-
-      if (pathElements.length === 0) {
-        throw new Error('No path data found in SVG');
-      }
-
-      const pathData = pathElements[0].getAttribute('d');
-      if (!pathData) {
-        throw new Error('No d attribute found in path');
-      }
-
-      postPluginMessage({
-        type: 'icon-svg-fetched',
-        nodeId,
-        svgPath: pathData,
-        iconName
-      });
-    } catch (error) {
-      postPluginMessage({
-        type: 'icon-svg-fetched',
-        nodeId,
-        svgPath: null,
-        error: getErrorMessage(error)
-      });
-    }
   }
 
   function getErrorMessage(error: unknown): string {
@@ -547,147 +302,32 @@
 
 <svelte:window on:message={handleWindowMessage} />
 
-<div class="app">
-  <div class="tabs">
-    <button
-      type="button"
-      class:active={activeTab === 'import'}
-      class="tab"
-      on:click={() => selectTab('import')}
-    >
-      📥 Import
-    </button>
-    <button
-      type="button"
-      class:active={activeTab === 'export'}
-      class="tab"
-      on:click={() => selectTab('export')}
-    >
-      📤 Export
-    </button>
-  </div>
+<main class="app">
+  <header class="hero">
+    <h1>figma to pen</h1>
+    <p class="lead">将当前选中的 Figma 节点导出为 `.pen` 文件，图片资源会自动一并打包下载。</p>
+  </header>
 
-  {#if activeTab === 'import'}
-    {#if currentStep === 'upload'}
-      <div class="step-indicator">Step 1 of 2</div>
-      <h2>Import .pen file</h2>
-
-      <button
-        type="button"
-        class:active={isDropActive}
-        class="drop-zone"
-        on:click={openPenFilePicker}
-        on:dragover|preventDefault={handleDragOver}
-        on:dragleave={handleDragLeave}
-        on:drop|preventDefault={handleDrop}
-      >
-        <div class="drop-zone-icon">📄</div>
-        <div class="drop-zone-text">Drag & drop your .pen file here</div>
-        <div class="drop-zone-subtext">or click to browse</div>
-      </button>
-
-      <input
-        bind:this={fileInput}
-        class="file-input"
-        type="file"
-        accept=".pen"
-        on:change={handlePenInputChange}
-      />
-
-      {#if fileMeta}
-        <div class="file-info">
-          <div class="file-name">{fileMeta.name}</div>
-          <div class="file-details">
-            Version: {fileMeta.version} • {fileMeta.elementCount} elements
-          </div>
-        </div>
-      {/if}
-
-      {#if analysis}
-        <div class="file-info">
-          <div class="file-name">📊 File Analysis</div>
-          <div class="file-details">
-            <strong>Version:</strong> {analysis.version}<br />
-            <strong>Total Elements:</strong> {analysis.totalElements}<br />
-            <strong>Components:</strong> {analysis.components} | <strong>Instances:</strong> {analysis.instances}<br />
-            <strong>Auto-Layout Frames:</strong> {analysis.autoLayoutFrames} | <strong>Absolute:</strong> {analysis.absoluteFrames}<br />
-            <strong>Text Nodes:</strong> {analysis.textNodes} | <strong>Images:</strong> {analysis.images}<br />
-            <strong>Variables:</strong> {analysis.variables} | <strong>Max Depth:</strong> {analysis.maxDepth}<br />
-            <strong>Types:</strong> {analysisTypesText}
-          </div>
-        </div>
-      {/if}
-
-      <div class="section">
-        <label class="label" for="imagesInput">Images (optional)</label>
-        <button type="button" class="button secondary" on:click={openImagesPicker}>
-          Select images folder
-        </button>
-        <div class="help-text">If your design uses local images, select the folder containing them</div>
-        {#if imagesStatus}
-          <div class={`status ${imagesStatus.type}`}>{imagesStatus.message}</div>
-        {/if}
-      </div>
-
-      <input
-        bind:this={imagesInput}
-        id="imagesInput"
-        class="file-input"
-        type="file"
-        webkitdirectory
-        multiple
-        on:change={handleImagesInputChange}
-      />
-
-      {#if uploadStatus}
-        <div class={`status ${uploadStatus.type}`}>{uploadStatus.message}</div>
-      {/if}
-
-      <button type="button" class="button" disabled={!penFileData} on:click={handleNext}>
-        Next →
-      </button>
-    {:else}
-      <div class="step-indicator">Step 2 of 2</div>
-      <h2>Place on canvas</h2>
-
-      <div class="status info">
-        <strong>Ready to import!</strong><br />
-        Navigate to where you want the design placed, then click "Place here"
-      </div>
-
-      {#if fileMeta}
-        <div class="file-info">
-          <div class="file-name">{fileMeta.name}</div>
-          <div class="file-details">
-            Version: {fileMeta.version} • {fileMeta.elementCount} elements
-          </div>
-        </div>
-      {/if}
-
-      <button type="button" class="button" disabled={isPlacing || !penFileData} on:click={handlePlace}>
-        {#if isPlacing}Placing...{:else}📍 Place here{/if}
-      </button>
-      <button type="button" class="button secondary" on:click={handleBack}>
-        ← Back
-      </button>
-    {/if}
-  {:else}
-    <h2>Export to .pen</h2>
-
-    <div class="section">
-      <div class="label">Export selection</div>
-      <div class="help-text">The plugin exports the nodes currently selected on the canvas</div>
-    </div>
+  <section class="panel" aria-labelledby="export-title">
+    <h2 id="export-title">导出当前选择</h2>
+    <ol class="steps">
+      <li>在 Figma 画布中选中要导出的节点。</li>
+      <li>点击下方按钮生成 `.pen` 文件。</li>
+      <li>如果选区包含图片资源，插件会下载带资产的压缩包。</li>
+    </ol>
 
     {#if exportStatus}
-      <div class={`status ${exportStatus.type}`}>{exportStatus.message}</div>
+      <p class={`status ${exportStatus.type}`} role={exportStatus.type === 'error' ? 'alert' : 'status'}>
+        {exportStatus.message}
+      </p>
     {/if}
 
     <button type="button" class="button" disabled={isExporting} on:click={handleExport}>
-      {#if isExporting}Exporting...{:else}📤 Export{/if}
+      {#if isExporting}正在导出...{:else}导出为 .pen{/if}
     </button>
-  {/if}
-</div>
+  </section>
+
+</main>
 
 <style>
   :global(html, body) {
@@ -710,87 +350,49 @@
     padding: 16px;
   }
 
+  .hero {
+    margin-bottom: 16px;
+  }
+
+  h1,
   h2 {
-    margin: 0 0 12px;
+    margin: 0;
+    color: #000;
+  }
+
+  h1 {
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  h2 {
+    margin-bottom: 12px;
     font-size: 14px;
     font-weight: 600;
-    color: #000;
   }
 
-  .tabs {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-    border-bottom: 1px solid #e5e5e5;
-  }
-
-  .tab {
-    padding: 8px 16px;
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
+  .lead {
+    margin: 8px 0 0;
     color: #666;
-    transition: all 0.2s;
+    line-height: 1.5;
   }
 
-  .tab:hover {
-    color: #000;
+  .panel {
+    border: 1px solid #e5e5e5;
+    border-radius: 10px;
+    padding: 16px;
+    background: #fafafa;
   }
 
-  .tab.active {
-    color: #18a0fb;
-    border-bottom-color: #18a0fb;
-  }
-
-  .drop-zone {
-    width: 100%;
-    margin-bottom: 16px;
-    border: 2px dashed #ccc;
-    border-radius: 8px;
-    padding: 32px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-    background: #fff;
-  }
-
-  .drop-zone:hover {
-    border-color: #18a0fb;
-    background: #f0f8ff;
-  }
-
-  .drop-zone.active {
-    border-color: #18a0fb;
-    background: #e6f4ff;
-  }
-
-  .drop-zone-icon {
-    margin-bottom: 8px;
-    font-size: 48px;
-    opacity: 0.5;
-  }
-
-  .drop-zone-text {
-    margin-bottom: 4px;
-    font-size: 13px;
-    color: #666;
-  }
-
-  .drop-zone-subtext {
-    font-size: 11px;
-    color: #999;
-  }
-
-  .file-input {
-    display: none;
+  .steps {
+    margin: 0 0 16px;
+    padding-left: 18px;
+    color: #555;
+    line-height: 1.6;
   }
 
   .button {
     width: 100%;
-    margin-bottom: 8px;
     padding: 10px 16px;
     background: #18a0fb;
     color: #fff;
@@ -811,37 +413,8 @@
     cursor: not-allowed;
   }
 
-  .button.secondary {
-    background: #fff;
-    color: #333;
-    border: 1px solid #ccc;
-  }
-
-  .button.secondary:hover:not(:disabled) {
-    background: #f5f5f5;
-  }
-
-  .file-info {
-    margin-bottom: 12px;
-    border-radius: 6px;
-    padding: 12px;
-    background: #f5f5f5;
-  }
-
-  .file-name {
-    margin-bottom: 4px;
-    font-weight: 500;
-    color: #000;
-  }
-
-  .file-details {
-    font-size: 11px;
-    color: #666;
-    line-height: 1.5;
-  }
-
   .status {
-    margin-bottom: 12px;
+    margin: 0 0 12px;
     border-radius: 6px;
     padding: 8px 12px;
     font-size: 11px;
@@ -863,28 +436,10 @@
     color: #0d47a1;
   }
 
-  .section {
-    margin-bottom: 20px;
-  }
-
-  .label {
-    display: block;
-    margin-bottom: 6px;
-    font-weight: 500;
-    color: #333;
-  }
-
-  .help-text {
-    margin-top: 4px;
+  .footnote {
+    margin-top: 12px;
     font-size: 11px;
-    line-height: 1.4;
-    color: #999;
-  }
-
-  .step-indicator {
-    margin-bottom: 16px;
-    text-align: center;
-    font-size: 11px;
-    color: #666;
+    line-height: 1.5;
+    color: #888;
   }
 </style>

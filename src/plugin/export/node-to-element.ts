@@ -105,6 +105,7 @@ export async function nodeToElementImpl(
   exportContext: ExportContext | null = null,
   parentNode: ExportableParentNode = null
 ): Promise<ExportedPenElement | null> {
+  reportSceneNodeProcessed(exportContext);
   let type = 'frame';
 
   if (node.type === 'RECTANGLE') type = 'rectangle';
@@ -387,6 +388,20 @@ export async function nodeToElementImpl(
   applyBonusBadgeCornerRadiusFallback(element, exportContext);
 
   return promoteContainerStyles(element);
+}
+
+function reportSceneNodeProcessed(exportContext: ExportContext | null): void {
+  if (!exportContext?.progress) {
+    return;
+  }
+
+  exportContext.progress.processedSceneNodes += 1;
+  exportContext.progress.onUpdate({
+    totalSceneNodes: exportContext.progress.totalSceneNodes,
+    processedSceneNodes: exportContext.progress.processedSceneNodes,
+    totalAssets: exportContext.progress.totalAssets,
+    exportedAssets: exportContext.progress.exportedAssets
+  });
 }
 
 function generateId(): string {

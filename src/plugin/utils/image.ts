@@ -441,6 +441,7 @@ export async function getExportImageAsset(
       }
 
       exportContext.assets.set(imageAssetKey, asset);
+      reportExportedAsset(exportContext);
       return asset;
     } catch (error) {
       console.warn('[EXPORT] getBytesAsync failed', { nodeId: node.id, message: error instanceof Error ? error.message : String(error) });
@@ -457,6 +458,7 @@ export async function getExportImageAsset(
         dataUrl: `data:image/png;base64,${uint8ArrayToBase64(bytes)}`
       };
       exportContext.assets.set(assetKey, asset);
+      reportExportedAsset(exportContext);
       return asset;
     } catch (error) {
       console.warn('[EXPORT] exportAsync fallback failed', { nodeId: node.id, message: error instanceof Error ? error.message : String(error) });
@@ -488,11 +490,26 @@ export async function exportNodeToPngAsset(
       dataUrl: `data:image/png;base64,${uint8ArrayToBase64(bytes)}`
     };
     exportContext.assets.set(assetKey, asset);
+    reportExportedAsset(exportContext);
     return asset;
   } catch (error) {
     console.warn('[EXPORT] exportNodeToPngAsset failed', { nodeId: node.id, message: error instanceof Error ? error.message : String(error) });
     return null;
   }
+}
+
+function reportExportedAsset(exportContext: ExportContext | null): void {
+  if (!exportContext?.progress) {
+    return;
+  }
+
+  exportContext.progress.exportedAssets += 1;
+  exportContext.progress.onUpdate({
+    totalSceneNodes: exportContext.progress.totalSceneNodes,
+    processedSceneNodes: exportContext.progress.processedSceneNodes,
+    totalAssets: exportContext.progress.totalAssets,
+    exportedAssets: exportContext.progress.exportedAssets
+  });
 }
 
 export function makePostMessageSafe(value: unknown): PostMessageSafeValue | undefined {

@@ -1,37 +1,24 @@
 import { makePostMessageSafe } from './utils/image';
 import {
-  analyzePenFile as analyzePenFileImpl,
-  createNodesFromPenData as createNodesFromPenDataImpl,
-  importPenFile as importPenFileImpl
-} from './import/pipeline';
-import {
   exportToPen as exportToPenImpl,
   nodeToElement as nodeToElementImplWrapper
 } from './export/pipeline';
 import { nodeToElementImpl } from './export/node-to-element';
-import {
-  createInstances as createInstancesImpl,
-  createNode as createNodeImpl
-} from './nodes/factory';
-import type { UiToPluginMessage } from '../shared/messages';
-import type { PenAnalysis, PenDocument, PenElement } from '../shared/pen';
-import type { NodeContainer, VariableMap } from './nodes/types.js';
-import type { ExportBundle, ExportContext, ExportedPenElement } from './export/types.js';
+import type { PluginToUiMessage, UiToPluginMessage } from '../shared/messages';
+import type { PenDocument } from '../shared/pen';
+import type { ExportBundle, ExportContext, ExportProgressSnapshot, ExportedPenElement } from './export/types.js';
 
-console.log('Pencil Sync Plugin v2.5 loaded');
+console.log('figma to pen plugin loaded');
 
-if (figma.command === 'import') {
-  figma.showUI(__html__, { width: 400, height: 600 });
-} else if (figma.command === 'export-selection') {
+let uiReady = false;
+
+if (figma.command === 'export-selection') {
   void exportSelectionToPen();
 } else if (figma.command === 'export-page') {
   void exportPageToPen();
 } else {
-  figma.showUI(__html__, { width: 400, height: 600 });
+  showPluginUI({ width: 400, height: 360 });
 }
-
-const componentMap = new Map<string, ComponentNode>();
-const imageCache = new Map<string, string>();
 
 async function exportSelectionToPen(): Promise<void> {
   try {
@@ -47,7 +34,7 @@ async function exportSelectionToPen(): Promise<void> {
 
     const exportBundle = await convertNodesToPenBundle(selection);
 
-    figma.showUI(__html__, { width: 1, height: 1, visible: false });
+    showPluginUI({ width: 1, height: 1, visible: false });
 
     setTimeout(() => {
       figma.ui.postMessage({
@@ -76,7 +63,7 @@ async function exportPageToPen(): Promise<void> {
       return;
     }
 
-    figma.showUI(__html__, { width: 1, height: 1, visible: false });
+    showPluginUI({ width: 1, height: 1, visible: false });
 
     setTimeout(() => {
       figma.ui.postMessage({
@@ -95,15 +82,32 @@ async function exportPageToPen(): Promise<void> {
 
 async function convertNodesToPenBundle(nodes: readonly SceneNode[]): Promise<ExportBundle> {
   console.log('[EXPORT] convertNodesToPenBundle start', { count: nodes.length });
+  const exportWork = analyzeExportWork(nodes);
   const exportContext: ExportContext = {
     assets: new Map(),
-    inferredCornerRadiusByNodeId: new Map()
+    inferredCornerRadiusByNodeId: new Map(),
+    progress: {
+      totalSceneNodes: exportWork.totalSceneNodes,
+      processedSceneNodes: 0,
+      totalAssets: exportWork.totalAssets,
+      exportedAssets: 0,
+      onUpdate: (snapshot) => {
+        postExportProgress(snapshot);
+      }
+    }
   };
   const penData: PenDocument = {
     version: '2.7',
     variables: {},
     children: []
   };
+
+  postExportProgress({
+    totalSceneNodes: exportWork.totalSceneNodes,
+    processedSceneNodes: 0,
+    totalAssets: exportWork.totalAssets,
+    exportedAssets: 0
+  });
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
@@ -121,29 +125,7 @@ async function convertNodesToPenBundle(nodes: readonly SceneNode[]): Promise<Exp
 }
 
 figma.ui.onmessage = async (msg: UiToPluginMessage): Promise<void> => {
-  if (msg.type === 'import-pen') {
-    try {
-      await importPenFile(msg.data, msg.images);
-      figma.ui.postMessage({ type: 'import-success' });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      figma.ui.postMessage({ type: 'import-error', error: message });
-    }
-  } else if (msg.type === 'place-import') {
-    try {
-      const nodes = await createNodesFromPenData(msg.data, msg.images);
-
-      figma.currentPage.selection = nodes;
-      figma.viewport.scrollAndZoomIntoView(nodes);
-
-      figma.notify('✅ Pen file imported successfully!');
-      figma.ui.postMessage({ type: 'placement-complete' });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      figma.notify('❌ Error importing: ' + message);
-      figma.ui.postMessage({ type: 'import-error', error: message });
-    }
-  } else if (msg.type === 'export-pen') {
+  if (msg.type === 'export-pen') {
     try {
       console.log('[EXPORT] export-pen message', { mode: 'selection' });
       const exportBundle = await exportToPen();
@@ -158,36 +140,6 @@ figma.ui.onmessage = async (msg: UiToPluginMessage): Promise<void> => {
       console.error('[EXPORT] export-pen failed', typedError.message, typedError.stack);
       figma.ui.postMessage({ type: 'export-error', error: typedError.message });
     }
-  } else if (msg.type === 'icon-svg-fetched') {
-    try {
-      if (msg.svgPath && msg.nodeId) {
-        console.log('[ICON] Received SVG for icon:', msg.iconName);
-
-        const node = figma.getNodeById(msg.nodeId);
-
-        if (node && node.type === 'VECTOR') {
-          try {
-            node.vectorPaths = [{
-              windingRule: 'NONZERO',
-              data: msg.svgPath
-            }];
-
-            node.setPluginData('isIconPlaceholder', 'false');
-            node.setPluginData('pendingIconFetch', 'false');
-
-            console.log('[ICON] Successfully updated vector with icon SVG:', msg.iconName);
-          } catch (pathError) {
-            console.error('[ICON] Failed to set vector path:', pathError);
-          }
-        } else {
-          console.warn('[ICON] Node not found or not a vector:', msg.nodeId);
-        }
-      } else {
-        console.warn('[ICON] Failed to fetch icon:', msg.error);
-      }
-    } catch (error) {
-      console.error('[ICON] Error processing fetched icon:', error);
-    }
   } else if (msg.type === 'close-after-download') {
     figma.notify('✅ .pen file exported successfully!');
     setTimeout(() => {
@@ -198,43 +150,117 @@ figma.ui.onmessage = async (msg: UiToPluginMessage): Promise<void> => {
   }
 };
 
-async function importPenFile(penData: PenDocument, images: Record<string, string> | null | undefined): Promise<void> {
-  componentMap.clear();
-  return importPenFileImpl(penData, images, {
-    imageCache,
-    analyzePenFile
-  });
-}
-
-function analyzePenFile(penData: PenDocument): PenAnalysis {
-  return analyzePenFileImpl(penData);
-}
-
-async function createNodesFromPenData(penData: PenDocument, images: Record<string, string> | null | undefined): Promise<SceneNode[]> {
-  return createNodesFromPenDataImpl(penData, images, {
-    createNode,
-    createInstances
-  });
-}
-
-async function createNode(element: PenElement, variables: VariableMap, parentNode: NodeContainer | null = null): Promise<SceneNode | null> {
-  return createNodeImpl(element, variables, {
-    imageCache,
-    componentMap
-  }, parentNode);
-}
-
-async function createInstances(children: PenElement[], variables: VariableMap): Promise<void> {
-  return createInstancesImpl(children, variables, {
-    componentMap,
-    imageCache
-  });
-}
-
 async function exportToPen(): Promise<ExportBundle> {
   return exportToPenImpl({
     convertNodesToPenBundle
   });
+}
+
+function postExportProgress(snapshot: ExportProgressSnapshot): void {
+  if (!uiReady) {
+    return;
+  }
+
+  const message = formatExportProgressMessage(snapshot);
+  const payload: PluginToUiMessage = {
+    type: 'export-progress',
+    stage: 'export',
+    message
+  };
+  figma.ui.postMessage(payload);
+}
+
+function formatExportProgressMessage(snapshot: ExportProgressSnapshot): string {
+  const nodePart = `节点 ${snapshot.processedSceneNodes}/${snapshot.totalSceneNodes}`;
+  if (snapshot.totalAssets > 0) {
+    return `正在导出 .pen（${nodePart}，图片 ${snapshot.exportedAssets}/${snapshot.totalAssets}）`;
+  }
+
+  return `正在导出 .pen（${nodePart}）`;
+}
+
+function analyzeExportWork(nodes: readonly SceneNode[]): { totalSceneNodes: number; totalAssets: number } {
+  let totalSceneNodes = 0;
+  const assetKeys = new Set<string>();
+
+  for (const node of nodes) {
+    walkExportNodes(node, assetKeys, () => {
+      totalSceneNodes += 1;
+    });
+  }
+
+  return {
+    totalSceneNodes,
+    totalAssets: assetKeys.size
+  };
+}
+
+function walkExportNodes(
+  node: SceneNode,
+  assetKeys: Set<string>,
+  onVisit: () => void
+): void {
+  onVisit();
+  collectNodeAssetKeys(node, assetKeys);
+
+  if ('children' in node && Array.isArray(node.children)) {
+    for (const child of node.children) {
+      walkExportNodes(child, assetKeys, onVisit);
+    }
+  }
+}
+
+function collectNodeAssetKeys(node: SceneNode, assetKeys: Set<string>): void {
+  if (shouldRasterizeNodeForExportProgress(node) && typeof (node as Partial<ExportMixin>).exportAsync === 'function') {
+    assetKeys.add(`raster:${node.id}`);
+    return;
+  }
+
+  collectPaintAssetKeys((node as SceneNode & { fills?: ReadonlyArray<Paint> | PluginAPI['mixed'] }).fills, assetKeys);
+  collectPaintAssetKeys((node as SceneNode & { strokes?: ReadonlyArray<Paint> | PluginAPI['mixed'] }).strokes, assetKeys);
+}
+
+function collectPaintAssetKeys(
+  paints: ReadonlyArray<Paint> | PluginAPI['mixed'] | undefined,
+  assetKeys: Set<string>
+): void {
+  if (!Array.isArray(paints)) {
+    return;
+  }
+
+  for (const paint of paints) {
+    if (paint?.type === 'IMAGE' && paint.visible !== false && paint.imageHash) {
+      assetKeys.add(`image:${paint.imageHash}`);
+    }
+  }
+}
+
+function shouldRasterizeNodeForExportProgress(node: SceneNode): boolean {
+  if (typeof (node as Partial<ExportMixin>).exportAsync !== 'function') {
+    return false;
+  }
+
+  if (node.type === 'GROUP' && node.locked === true) {
+    return true;
+  }
+
+  if (!('children' in node) || !Array.isArray(node.children) || node.children.length === 0) {
+    return false;
+  }
+
+  return node.children.some((child) => {
+    const candidate = child as SceneNode & {
+      rotation?: number;
+      fills?: ReadonlyArray<Paint> | PluginAPI['mixed'];
+    };
+    const rotation = typeof candidate.rotation === 'number' ? candidate.rotation : 0;
+    return Math.abs(rotation) >= 0.01 && Array.isArray(candidate.fills) && candidate.fills.some((fill) => fill?.type === 'IMAGE' && fill.visible !== false);
+  });
+}
+
+function showPluginUI(options: ShowUIOptions): void {
+  figma.showUI(__html__, options);
+  uiReady = true;
 }
 
 async function nodeToElement(

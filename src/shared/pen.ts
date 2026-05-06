@@ -132,18 +132,3 @@ export interface PenDocument {
   children: PenElement[];
   theme?: unknown;
 }
-
-export interface PenAnalysis {
-  version: string;
-  totalElements: number;
-  elementTypes: Record<string, number>;
-  components: number;
-  instances: number;
-  autoLayoutFrames: number;
-  absoluteFrames: number;
-  images: number;
-  textNodes: number;
-  variables: number;
-  maxDepth: number;
-  hasTheme: boolean;
-}

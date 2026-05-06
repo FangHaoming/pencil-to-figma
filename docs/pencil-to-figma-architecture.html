@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pencil Sync — 架构图</title>
+  <title>figma to pen — 架构图</title>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * {
@@ -136,9 +136,9 @@
     <div class="header">
       <div class="header-row">
         <div class="pulse-dot"></div>
-        <h1>Pencil Sync 插件架构</h1>
+        <h1>figma to pen 插件架构</h1>
       </div>
-      <p class="subtitle">Figma 插件：.pen ↔ 画布节点双向转换；下图单独标出「从 Figma 导出 .pen」完整链路</p>
+      <p class="subtitle">Figma 插件：聚焦从 Figma 导出 `.pen`；下图展示当前单页导出流程的主链路</p>
     </div>
 
     <div class="diagram-container">
@@ -165,13 +165,13 @@
         <text x="388" y="140" fill="#94a3b8" font-size="8" text-anchor="middle">响应 / 进度</text>
 
         <line x1="573" y1="108" x2="703" y2="108" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <text x="638" y="100" fill="#94a3b8" font-size="8" text-anchor="middle">写入画布（导入 .pen）</text>
+        <text x="638" y="100" fill="#94a3b8" font-size="8" text-anchor="middle">读取当前画布选择</text>
 
         <line x1="703" y1="122" x2="573" y2="122" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>
         <text x="638" y="134" fill="#fbbf24" font-size="8" text-anchor="middle">读取节点树 · exportAsync（导出 .pen）</text>
 
         <line x1="265" y1="278" x2="265" y2="143" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>
-        <text x="278" y="215" fill="#a78bfa" font-size="8">导入：.pen → UI → Main</text>
+        <text x="278" y="215" fill="#a78bfa" font-size="8">导出产物：.pen + assets</text>
 
         <path d="M 514 268 L 670 268 L 670 143" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead)"/>
         <text x="575" y="260" fill="#34d399" font-size="8">ExportPipeline · PenSerializer</text>
@@ -220,8 +220,8 @@
         <rect x="455" y="250" width="368" height="88" rx="8" fill="#0f172a"/>
         <rect x="455" y="250" width="368" height="88" rx="8" fill="rgba(6, 78, 59, 0.25)" stroke="#34d399" stroke-width="1" stroke-dasharray="4,3"/>
         <text x="639" y="272" fill="white" font-size="11" font-weight="600" text-anchor="middle">领域管线（Main 线程内）</text>
-        <text x="639" y="292" fill="#94a3b8" font-size="9" text-anchor="middle">ImportPipeline：解析 .pen → NodeFactory → SceneNode</text>
-        <text x="639" y="308" fill="#94a3b8" font-size="9" text-anchor="middle">ExportPipeline：选择集 → StyleMapper / ImageExporter → PenSerializer</text>
+        <text x="639" y="292" fill="#94a3b8" font-size="9" text-anchor="middle">ExportPipeline：选择集 → StyleMapper / ImageExporter → PenSerializer</text>
+        <text x="639" y="308" fill="#94a3b8" font-size="9" text-anchor="middle">历史导入代码仍在仓库中，但当前产品界面不再暴露导入流程</text>
         <text x="639" y="324" fill="#34d399" font-size="8" text-anchor="middle">pluginData：pencilId 映射</text>
 
         <!-- Figma → .pen export sequence -->
@@ -277,12 +277,11 @@
       <div class="card">
         <div class="card-header">
           <div class="card-dot emerald"></div>
-          <h3>导入 / 导出 .pen</h3>
+          <h3>导出 `.pen`</h3>
         </div>
         <ul>
-          <li>• 导入：本地 .pen + assets → UI 读文件 → Main ImportPipeline → 写入画布并记 pluginData</li>
           <li>• 导出 .pen：选中节点 → UI 发起导出 → Main 用 figma API 读树与样式 → ImageExporter（exportAsync 等）→ PenSerializer → postMessage 将 JSON 与资源交给 UI → downloadExportPackage 触发浏览器下载</li>
-          <li>• 设计目标：双向可回环，结构优先于纯视觉</li>
+          <li>• 当前产品目标：聚焦导出链路，结构优先于纯视觉</li>
         </ul>
       </div>
 
@@ -300,7 +299,7 @@
     </div>
 
     <p class="footer">
-      pencil-to-figma · 架构示意 · 依据 docs/figma-pencil-互转功能设计.md 与 manifest.json
+      figma to pen · 架构示意 · 依据 docs/figma-pencil-互转功能设计.md 与 manifest.json
     </p>
   </div>
 </body>
