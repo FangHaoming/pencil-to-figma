@@ -108,6 +108,34 @@ function createFrameNode(overrides: Partial<MockSceneNode> = {}): MockSceneNode 
   };
 }
 
+function createInstanceNode(overrides: Partial<MockSceneNode> = {}): MockSceneNode {
+  return {
+    id: 'instance-1',
+    type: 'INSTANCE',
+    name: 'Instance',
+    x: 10,
+    y: 20,
+    width: 120,
+    height: 48,
+    opacity: 1,
+    layoutMode: 'HORIZONTAL',
+    itemSpacing: 12,
+    paddingTop: 8,
+    paddingRight: 16,
+    paddingBottom: 8,
+    paddingLeft: 16,
+    primaryAxisAlignItems: 'CENTER',
+    counterAxisAlignItems: 'MAX',
+    clipsContent: true,
+    fills: [],
+    strokes: [],
+    strokeWeight: 0,
+    children: [],
+    getPluginData: createPluginDataStore({ pencilId: 'instance-pencil' }),
+    ...overrides
+  };
+}
+
 function createTextNode(overrides: Partial<MockSceneNode> = {}): MockSceneNode {
   return {
     id: 'text-1',
@@ -227,6 +255,111 @@ test('nodeToElementImpl maps frame auto-layout properties and children', async (
   assert.equal(result.children?.length, 1);
   assert.equal(result.children?.[0]?.type, 'text');
   assert.equal(result.children?.[0]?.fontWeight, '700');
+});
+
+test('nodeToElementImpl flattens instances into regular frame nodes', async () => {
+  const textNode = createTextNode();
+  const instanceNode = createInstanceNode({
+    children: [textNode]
+  });
+
+  const result = await nodeToElementImpl(instanceNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.equal(result.id, 'instance-pencil');
+  assert.equal(result.layout, 'horizontal');
+  assert.equal(result.clip, true);
+  assert.equal(result.gap, 12);
+  assert.deepEqual(result.padding, [8, 16]);
+  assert.equal(result.justifyContent, 'center');
+  assert.equal(result.alignItems, 'end');
+  assert.equal('ref' in result, false);
+  assert.equal(result.children?.length, 1);
+  assert.equal(result.children?.[0]?.type, 'text');
+});
+
+test('nodeToElementImpl preserves hidden child visibility as disabled state', async () => {
+  const hiddenDescription = createTextNode({
+    id: 'hidden-description',
+    name: 'Description',
+    visible: false
+  });
+  const cardNode = createFrameNode({
+    id: 'card-frame',
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    children: [hiddenDescription]
+  });
+
+  const result = await nodeToElementImpl(cardNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.children?.length, 1);
+  assert.equal(result.children?.[0]?.enabled, false);
+});
+
+test('nodeToElementImpl degrades wrapped auto layout frames to absolute layout', async () => {
+  const firstCard = createFrameNode({
+    id: 'card-1',
+    x: 0,
+    y: 0,
+    width: 620,
+    height: 350,
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    children: []
+  });
+  const secondCard = createFrameNode({
+    id: 'card-2',
+    x: 660,
+    y: 0,
+    width: 620,
+    height: 350,
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    children: []
+  });
+  const wrappedFrame = createFrameNode({
+    id: 'wrapped-frame',
+    width: 1280,
+    height: 740,
+    layoutMode: 'HORIZONTAL',
+    layoutWrap: 'WRAP',
+    itemSpacing: 40,
+    primaryAxisAlignItems: 'CENTER',
+    counterAxisAlignItems: 'CENTER',
+    children: [firstCard, secondCard]
+  });
+
+  const result = await nodeToElementImpl(wrappedFrame as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.equal(result.layout, 'none');
+  assert.equal(result.gap, undefined);
+  assert.equal(result.justifyContent, undefined);
+  assert.equal(result.alignItems, undefined);
+  assert.equal(result.children?.[0]?.x, 0);
+  assert.equal(result.children?.[1]?.x, 660);
 });
 
 test('nodeToElementImpl converts text-specific properties', async () => {
@@ -366,6 +499,52 @@ test('nodeToElementImpl explodes mixed-color text into aligned child texts', asy
   ]);
   assert.equal(result.children?.[2]?.fill, '#14cb75');
   assert.equal(result.children?.[1]?.y, result.children?.[2]?.y);
+});
+
+test('nodeToElementImpl keeps fixed-width text as one node when segment styles are visually uniform', async () => {
+  const textNode = createTextNode({
+    id: 'uniform-segment-text',
+    characters: 'With one-click AI upscaling, transform low-resolution content like short-form series',
+    width: 800,
+    height: 25,
+    fontSize: 16,
+    fontName: { family: 'Montserrat', style: 'Regular' },
+    fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1 } }],
+    lineHeight: { unit: 'PERCENT', value: 156.25 },
+    letterSpacing: { unit: 'PIXELS', value: 0 },
+    textAlignHorizontal: 'CENTER',
+    textAlignVertical: 'CENTER',
+    textAutoResize: 'HEIGHT',
+    getStyledTextSegments: () => [
+      {
+        characters: 'With one-click AI upscaling, transform low-resolution content like short-form',
+        start: 0,
+        end: 76,
+        fontSize: 16,
+        fontName: { family: 'Montserrat', style: 'Regular' },
+        fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1 } }],
+        lineHeight: { unit: 'PERCENT', value: 156.25 },
+        letterSpacing: { unit: 'PIXELS', value: 0 }
+      },
+      {
+        characters: ' series',
+        start: 76,
+        end: 83,
+        fontSize: 16,
+        fontName: { family: 'Montserrat', style: 'Regular' },
+        fills: [{ type: 'SOLID', visible: true, color: { r: 1, g: 1, b: 1 } }],
+        lineHeight: { unit: 'PERCENT', value: 156.25 }
+      }
+    ]
+  });
+
+  const result = await nodeToElementImpl(textNode as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'text');
+  assert.equal(result.width, 800);
+  assert.equal(result.textGrowth, 'fixed-width');
+  assert.equal(result.content, 'With one-click AI upscaling, transform low-resolution content like short-form series');
 });
 
 test('nodeToElementImpl exports vector geometry and relative group child position', async () => {
@@ -825,6 +1004,43 @@ test('nodeToElementImpl rasterizes groups containing rotated image fills', async
   assert.deepEqual(result.fill, {
     type: 'image',
     url: './image-arrow-group.png',
+    mode: 'fill'
+  });
+  assert.equal(result.children, undefined);
+});
+
+test('nodeToElementImpl rasterizes locked frame containers to image fills', async () => {
+  const decoratedChild = createRectangleNode({
+    id: 'decorated-child',
+    width: 620,
+    height: 350,
+    fills: [{ type: 'SOLID', visible: true, color: { r: 0.2, g: 0.2, b: 0.2 } }]
+  });
+  const lockedFrame = createFrameNode({
+    id: 'locked-frame',
+    name: 'Locked Card',
+    width: 620,
+    height: 350,
+    layoutMode: 'NONE',
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisAlignItems: undefined,
+    counterAxisAlignItems: undefined,
+    locked: true,
+    children: [decoratedChild],
+    exportAsync: async () => new Uint8Array([9, 8, 7, 6])
+  });
+
+  const result = await nodeToElementImpl(lockedFrame as unknown as SceneNode & PluginDataMixin, createExportContext());
+
+  assert.ok(result);
+  assert.equal(result.type, 'frame');
+  assert.deepEqual(result.fill, {
+    type: 'image',
+    url: './Locked-Card-locked-frame.png',
     mode: 'fill'
   });
   assert.equal(result.children, undefined);

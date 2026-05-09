@@ -23,7 +23,7 @@ import type { PenEffect, PenFill, PenStroke, PenTextSegment } from '../../shared
 
 type ExportableNode = SceneNode & PluginDataMixin;
 type ExportableParentNode = BaseNode | null;
-type ExportableFrameNode = (FrameNode | ComponentNode) & SceneNode;
+type ExportableFrameNode = (FrameNode | ComponentNode | InstanceNode) & SceneNode;
 type ExportableTextNode = TextNode & SceneNode;
 type ExportableVectorNode = VectorNode & SceneNode;
 type ExportableGeometryNode = SceneNode &
@@ -115,7 +115,7 @@ export async function nodeToElementImpl(
   else if (node.type === 'VECTOR') type = 'path';
   else if (node.type === 'GROUP') type = 'group';
   else if (node.type === 'COMPONENT') type = 'frame';
-  else if (node.type === 'INSTANCE') type = 'ref';
+  else if (node.type === 'INSTANCE') type = 'frame';
   else if (node.type === 'FRAME') type = 'frame';
 
   const element: ExportedPenElement = {
@@ -123,6 +123,10 @@ export async function nodeToElementImpl(
     id: node.getPluginData('pencilId') || generateId(),
     name: node.name
   };
+
+  if ('visible' in node && node.visible === false) {
+    element.enabled = false;
+  }
 
   if (node.x !== undefined) {
     const relativeX = parentNode && parentNode.type === 'GROUP'
@@ -158,11 +162,14 @@ export async function nodeToElementImpl(
     }
   }
 
-  if (node.type === 'FRAME' || node.type === 'COMPONENT') {
+  if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
     const frameNode = node as ExportableFrameNode;
+    const hasWrapLayout = 'layoutWrap' in frameNode && frameNode.layoutWrap === 'WRAP';
     if (frameNode.clipsContent) element.clip = true;
 
-    if (frameNode.layoutMode === 'HORIZONTAL') {
+    if (hasWrapLayout) {
+      element.layout = 'none';
+    } else if (frameNode.layoutMode === 'HORIZONTAL') {
       element.layout = 'horizontal';
     } else if (frameNode.layoutMode === 'VERTICAL') {
       element.layout = 'vertical';
@@ -170,7 +177,7 @@ export async function nodeToElementImpl(
       element.layout = 'none';
     }
 
-    if (frameNode.layoutMode !== 'NONE') {
+    if (!hasWrapLayout && frameNode.layoutMode !== 'NONE') {
       if (frameNode.itemSpacing) element.gap = frameNode.itemSpacing;
 
       if (frameNode.paddingTop || frameNode.paddingRight || frameNode.paddingBottom || frameNode.paddingLeft) {
@@ -198,13 +205,6 @@ export async function nodeToElementImpl(
 
     if (frameNode.type === 'COMPONENT') {
       element.reusable = true;
-    }
-  }
-
-  if (node.type === 'INSTANCE') {
-    const mainComponent = node.mainComponent;
-    if (mainComponent) {
-      element.ref = mainComponent.getPluginData('pencilId') || mainComponent.id;
     }
   }
 
@@ -509,7 +509,13 @@ function shouldRasterizeNodeForImageTransform(node: ExportableNode): boolean {
     return false;
   }
 
-  if (node.type === 'GROUP' && node.locked === true) {
+  if (
+    'locked' in node &&
+    node.locked === true &&
+    'children' in node &&
+    Array.isArray(node.children) &&
+    node.children.length > 0
+  ) {
     return true;
   }
 
@@ -646,6 +652,7 @@ async function getStyledTextSegmentsForExport(
 
   const segments: StyledExportTextSegment[] = [];
   let cursor = 0;
+  const inheritedSegmentStyle = await getInheritedTextSegmentStyle(textNode, exportContext);
 
   for (const rawSegment of rawSegments) {
     if (!rawSegment || typeof rawSegment.characters !== 'string' || rawSegment.characters.length === 0) {
@@ -699,10 +706,84 @@ async function getStyledTextSegmentsForExport(
       }
     }
 
+    applyInheritedTextSegmentStyle(segment, inheritedSegmentStyle);
+
     segments.push(segment);
   }
 
   return segments.length > 0 ? segments : undefined;
+}
+
+async function getInheritedTextSegmentStyle(
+  textNode: ExportableTextNode,
+  exportContext: ExportContext | null
+): Promise<Partial<StyledExportTextSegment>> {
+  const inherited: Partial<StyledExportTextSegment> = {};
+
+  if (typeof textNode.fontSize === 'number') {
+    inherited.fontSize = textNode.fontSize;
+  }
+
+  if (textNode.fontName !== figma.mixed) {
+    inherited.fontFamily = textNode.fontName.family;
+    inherited.fontWeight = mapFigmaFontWeight(textNode.fontName.style);
+    if (textNode.fontName.style.toLowerCase().includes('italic')) {
+      inherited.fontStyle = 'italic';
+    }
+  }
+
+  if (textNode.lineHeight && textNode.lineHeight !== figma.mixed) {
+    const lineHeight = mapFigmaLineHeightToPenValue(textNode.lineHeight, textNode.fontSize);
+    if (typeof lineHeight === 'number') {
+      inherited.lineHeight = lineHeight;
+    }
+  }
+
+  const letterSpacing = mapFigmaLetterSpacingToPenValue(
+    (textNode as ExportableTextNode & {
+      letterSpacing?: { value: number; unit: string } | PluginAPI['mixed'];
+    }).letterSpacing,
+    textNode.fontSize
+  );
+  if (typeof letterSpacing === 'number') {
+    inherited.letterSpacing = letterSpacing;
+  }
+
+  if (Array.isArray(textNode.fills) && textNode.fills.length > 0) {
+    const fill = await mapFigmaPaintsToPenFills(textNode.fills, textNode, exportContext);
+    if (fill !== undefined) {
+      inherited.fill = fill;
+    }
+  }
+
+  return inherited;
+}
+
+function applyInheritedTextSegmentStyle(
+  segment: StyledExportTextSegment,
+  inherited: Partial<StyledExportTextSegment>
+): void {
+  if (segment.fontSize === undefined && inherited.fontSize !== undefined) {
+    segment.fontSize = inherited.fontSize;
+  }
+  if (segment.fontFamily === undefined && inherited.fontFamily !== undefined) {
+    segment.fontFamily = inherited.fontFamily;
+  }
+  if (segment.fontWeight === undefined && inherited.fontWeight !== undefined) {
+    segment.fontWeight = inherited.fontWeight;
+  }
+  if (segment.fontStyle === undefined && inherited.fontStyle !== undefined) {
+    segment.fontStyle = inherited.fontStyle;
+  }
+  if (segment.lineHeight === undefined && inherited.lineHeight !== undefined) {
+    segment.lineHeight = inherited.lineHeight;
+  }
+  if (segment.letterSpacing === undefined && inherited.letterSpacing !== undefined) {
+    segment.letterSpacing = inherited.letterSpacing;
+  }
+  if (segment.fill === undefined && inherited.fill !== undefined) {
+    segment.fill = clonePenFill(inherited.fill);
+  }
 }
 
 function stripSegmentMetadata(segment: StyledExportTextSegment): PenTextSegment {
@@ -719,7 +800,33 @@ function shouldExplodeMixedText(segments: StyledExportTextSegment[] | undefined)
   }
 
   const trackedKeys: Array<keyof PenTextSegment> = ['fontSize', 'fontFamily', 'fontWeight', 'fontStyle', 'fill', 'letterSpacing'];
-  return trackedKeys.some((key) => getUniformSegmentValue(segments, key) === undefined);
+  return trackedKeys.some((key) => hasNonUniformSegmentValue(segments, key));
+}
+
+function hasNonUniformSegmentValue<K extends keyof PenTextSegment>(
+  segments: PenTextSegment[],
+  key: K
+): boolean {
+  let referenceValue: string | null = null;
+
+  for (const segment of segments) {
+    const candidate = segment[key];
+    if (candidate === undefined) {
+      continue;
+    }
+
+    const serializedCandidate = JSON.stringify(candidate);
+    if (referenceValue === null) {
+      referenceValue = serializedCandidate;
+      continue;
+    }
+
+    if (serializedCandidate !== referenceValue) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function explodeTextSegmentsToGroup(
